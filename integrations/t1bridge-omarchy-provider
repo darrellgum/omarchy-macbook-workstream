@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Local compatibility adapter for Omarchy 4's keyboard-brightness command.
+# The packaged provider's `status` query is interpreted as brightness-down.
+set -euo pipefail
+
+if [[ $# == 2 && $1 == v1 && $2 == show-keyboard-backlight ]]; then
+  shopt -s nullglob
+  devices=(/sys/class/leds/*kbd_backlight)
+  (( ${#devices[@]} == 1 )) || exit 1
+  read -r current < "${devices[0]}/brightness"
+  read -r maximum < "${devices[0]}/max_brightness"
+  [[ $current =~ ^[0-9]+$ && $maximum =~ ^[0-9]+$ ]] || exit 1
+  (( 10#$maximum > 0 && 10#$current <= 10#$maximum )) || exit 1
+  percent=$(( 10#$current * 100 / 10#$maximum ))
+  exec omarchy-osd -i keyboard -p "$percent"
+fi
+
+# Having no custom renderer is the normal built-in configuration. Preserve
+# warnings for an explicitly selected renderer that is missing or broken.
+if [[ $# == 3 && $1 == v1 && $2 == notify-renderer-fallback && $3 == selection-unavailable ]]; then
+  selection="${XDG_CONFIG_HOME:-$HOME/.config}/t1bridge/renderer"
+  if [[ ! -e $selection && ! -L $selection ]]; then
+    exit 0
+  fi
+fi
+
+exec /usr/lib/t1bridge-omarchy/desktop-provider "$@"

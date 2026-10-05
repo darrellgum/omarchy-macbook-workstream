@@ -1,0 +1,5 @@
+[Apple SPI Keyboard internal pairing]
+MatchName=Apple SPI Keyboard
+MatchUdevType=keyboard
+MatchBus=spi
+AttrKeyboardIntegration=internal

@@ -1,0 +1,40 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${HOME}/.local/bin/t1-workstream-codex\"",
+            "timeout": 1,
+            "async": false
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${HOME}/.local/bin/t1-workstream-codex\"",
+            "timeout": 1,
+            "async": false
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${HOME}/.local/bin/t1-workstream-codex\"",
+            "timeout": 1,
+            "async": false
+          }
+        ]
+      }
+    ]
+  }
+}

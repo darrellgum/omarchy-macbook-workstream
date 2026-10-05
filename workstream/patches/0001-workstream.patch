@@ -1,0 +1,3404 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 55e4a57..0dd71da 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -231,6 +231,7 @@ dependencies = [
+ name = "t1-touchbar"
+ version = "0.0.0"
+ dependencies = [
++ "serde_json",
+  "t1-platform",
+  "t1-touchbar-hw",
+ ]
+diff --git a/crates/t1-touchbar/Cargo.toml b/crates/t1-touchbar/Cargo.toml
+index 32669af..1b63070 100644
+--- a/crates/t1-touchbar/Cargo.toml
++++ b/crates/t1-touchbar/Cargo.toml
+@@ -8,6 +8,23 @@ publish = false
+ 
+ [features]
+ provider-test-fixture = []
++workstream-codex = ["dep:serde_json"]
++workstream-claude = ["dep:serde_json"]
++
++[[bin]]
++name = "t1-workstream-claude"
++path = "src/bin/t1-workstream-claude.rs"
++required-features = ["workstream-claude"]
++
++[[test]]
++name = "workstream_claude"
++path = "tests/workstream_claude.rs"
++required-features = ["workstream-claude"]
++
++[[bin]]
++name = "t1-workstream-codex"
++path = "src/bin/t1-workstream-codex.rs"
++required-features = ["workstream-codex"]
+ 
+ [[bin]]
+ name = "t1-desktop-provider-fixture"
+@@ -20,6 +37,7 @@ path = "tests/desktop_provider.rs"
+ required-features = ["provider-test-fixture"]
+ 
+ [dependencies]
++serde_json = { version = "1.0.151", optional = true }
+ t1-platform = { path = "../t1-platform", version = "=0.0.0", default-features = false, features = ["frame-memfd", "seqpacket"] }
+ t1-touchbar-hw = { path = "../t1-touchbar-hw", version = "=0.0.0", default-features = false }
+ 
+diff --git a/crates/t1-touchbar/src/bin/t1-touchbar-tokyo.rs b/crates/t1-touchbar/src/bin/t1-touchbar-tokyo.rs
+new file mode 100644
+index 0000000..740eebe
+--- /dev/null
++++ b/crates/t1-touchbar/src/bin/t1-touchbar-tokyo.rs
+@@ -0,0 +1,12 @@
++//! Tokyo Night renderer using the maintained controls without selection recursion.
++
++use std::env;
++
++use t1_touchbar::builtin_renderer;
++use t1_touchbar::desktop_provider::{PROVIDER_ENVIRONMENT, resolve_provider_path};
++
++fn main() {
++    let provider_value = env::var_os(PROVIDER_ENVIRONMENT);
++    let provider_path = resolve_provider_path(provider_value.as_deref());
++    builtin_renderer::run_workstream_forever(provider_path.as_deref());
++}
+diff --git a/crates/t1-touchbar/src/bin/t1-workstream-claude.rs b/crates/t1-touchbar/src/bin/t1-workstream-claude.rs
+new file mode 100644
+index 0000000..d047652
+--- /dev/null
++++ b/crates/t1-touchbar/src/bin/t1-workstream-claude.rs
+@@ -0,0 +1,235 @@
++//! Optional, advisory Claude Code hooks. Never forwards conversation content.
++
++use std::env;
++use std::hash::{DefaultHasher, Hash, Hasher};
++use std::io::{self, Read};
++use std::path::{Path, PathBuf};
++use std::process::{Child, Command, Stdio};
++use std::thread;
++use std::time::{Duration, Instant};
++
++use serde_json::Value;
++
++const MAX_INPUT_BYTES: usize = 64 * 1024;
++const MAX_IDENTIFIER_BYTES: usize = 512;
++const CHILD_DEADLINE: Duration = Duration::from_millis(200);
++const CHILD_POLL: Duration = Duration::from_millis(5);
++
++#[derive(Debug, PartialEq, Eq)]
++struct Signal {
++    operation: &'static str,
++    id: String,
++    label: &'static str,
++}
++
++fn main() {
++    if let Some(signal) = read_signal(io::stdin().lock())
++        && let Some(executable) = sibling_executable()
++    {
++        dispatch(&executable, &signal);
++    }
++    // Exit zero without output: no decision, context injection, or continuation.
++    // Unavailable optional UI must never interfere with Claude's actual work.
++}
++
++fn read_signal(input: impl Read) -> Option<Signal> {
++    let mut bytes = Vec::new();
++    input
++        .take(u64::try_from(MAX_INPUT_BYTES).ok()?.saturating_add(1))
++        .read_to_end(&mut bytes)
++        .ok()?;
++    if bytes.len() > MAX_INPUT_BYTES {
++        return None;
++    }
++    let value: Value = serde_json::from_slice(&bytes).ok()?;
++    signal_for(&value)
++}
++
++fn signal_for(value: &Value) -> Option<Signal> {
++    // Subagents may inherit configured hooks and share the parent's prompt ID.
++    // Their activity must not start or finish the main conversation's operation.
++    if value.get("agent_id").is_some_and(|agent| !agent.is_null()) {
++        return None;
++    }
++    let (operation, label) = match value.get("hook_event_name")?.as_str()? {
++        "UserPromptSubmit" => ("begin", "CLAUDE WORKING"),
++        "Stop" => ("attention", "RESPONSE READY"),
++        "StopFailure" => ("failed", "CLAUDE ERROR"),
++        _ => return None,
++    };
++    let session = identifier(value.get("session_id")?)?;
++    // Since Claude Code 2.1.196 this common field identifies a specific prompt.
++    // A session-only fallback would let an old Stop finish a newer prompt.
++    let prompt = identifier(value.get("prompt_id")?)?;
++    Some(Signal {
++        operation,
++        id: operation_id(session, prompt),
++        label,
++    })
++}
++
++fn identifier(value: &Value) -> Option<&str> {
++    let text = value.as_str()?;
++    if text.is_empty() || text.len() > MAX_IDENTIFIER_BYTES {
++        return None;
++    }
++    Some(text)
++}
++
++fn operation_id(session: &str, prompt: &str) -> String {
++    // Correlation only, not anonymization. No raw identifier becomes a path,
++    // process argument, display label, or runtime record.
++    let mut hash = DefaultHasher::new();
++    (session, prompt).hash(&mut hash);
++    format!("claude-{:016x}", hash.finish())
++}
++
++fn sibling_executable() -> Option<PathBuf> {
++    Some(env::current_exe().ok()?.parent()?.join("t1-workstream"))
++}
++
++fn dispatch(executable: &Path, signal: &Signal) {
++    let Ok(mut child) = Command::new(executable)
++        .args([signal.operation, signal.id.as_str(), signal.label])
++        .stdin(Stdio::null())
++        .stdout(Stdio::null())
++        .stderr(Stdio::null())
++        .spawn()
++    else {
++        return;
++    };
++    finish_child(&mut child, CHILD_DEADLINE);
++}
++
++fn finish_child(child: &mut Child, deadline: Duration) {
++    let started = Instant::now();
++    loop {
++        match child.try_wait() {
++            Ok(Some(_)) => return,
++            Ok(None) if started.elapsed() < deadline => thread::sleep(CHILD_POLL),
++            Ok(None) | Err(_) => {
++                let _ = child.kill();
++                let _ = child.wait();
++                return;
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++
++    fn event(name: &str) -> Value {
++        json!({
++            "hook_event_name": name,
++            "session_id": "synthetic-session-1",
++            "prompt_id": "synthetic-prompt-1",
++        })
++    }
++
++    #[test]
++    fn supported_events_use_fixed_labels_and_opaque_ids() {
++        for (name, operation, label) in [
++            ("UserPromptSubmit", "begin", "CLAUDE WORKING"),
++            ("Stop", "attention", "RESPONSE READY"),
++            ("StopFailure", "failed", "CLAUDE ERROR"),
++        ] {
++            let mut input = event(name);
++            input["prompt"] = json!("SYNTHETIC PRIVATE PROMPT");
++            input["last_assistant_message"] = json!("SYNTHETIC PRIVATE OUTPUT");
++            input["error_details"] = json!("SYNTHETIC PRIVATE ERROR");
++            input["transcript_path"] = json!("/synthetic/transcript-do-not-open");
++            let signal = signal_for(&input).unwrap();
++            assert_eq!(signal.operation, operation);
++            assert_eq!(signal.label, label);
++            assert_eq!(signal.id.len(), "claude-".len() + 16);
++            assert!(signal.id.starts_with("claude-"));
++            assert!(!format!("{signal:?}").contains("PRIVATE"));
++            assert!(!signal.id.contains("synthetic"));
++        }
++    }
++
++    #[test]
++    fn every_session_and_prompt_has_a_distinct_operation() {
++        assert_eq!(operation_id("a", "1"), operation_id("a", "1"));
++        assert_ne!(operation_id("a", "1"), operation_id("a", "2"));
++        assert_ne!(operation_id("a", "1"), operation_id("b", "1"));
++        assert_ne!(operation_id("a", "bc"), operation_id("ab", "c"));
++    }
++
++    #[test]
++    fn incomplete_older_version_and_subagent_events_are_quiet() {
++        for field in ["session_id", "prompt_id"] {
++            let mut missing = event("Stop");
++            missing.as_object_mut().unwrap().remove(field);
++            assert!(signal_for(&missing).is_none());
++            for invalid in [
++                json!(null),
++                json!(true),
++                json!(4),
++                json!(""),
++                json!("a".repeat(MAX_IDENTIFIER_BYTES + 1)),
++            ] {
++                let mut input = event("Stop");
++                input[field] = invalid;
++                assert!(signal_for(&input).is_none());
++            }
++        }
++        let mut child = event("Stop");
++        child["agent_id"] = json!("synthetic-subagent");
++        assert!(signal_for(&child).is_none());
++        child["agent_id"] = json!(null);
++        assert!(signal_for(&child).is_some());
++        for name in [
++            "SubagentStop",
++            "Interrupt",
++            "Notification",
++            "PreToolUse",
++            "",
++        ] {
++            assert!(signal_for(&event(name)).is_none());
++        }
++    }
++
++    #[test]
++    fn parser_rejects_oversized_and_invalid_input() {
++        let mut input = serde_json::to_vec(&event("Stop")).unwrap();
++        input.resize(MAX_INPUT_BYTES, b' ');
++        assert!(read_signal(input.as_slice()).is_some());
++        input.push(b' ');
++        assert!(read_signal(input.as_slice()).is_none());
++        assert!(read_signal(&b"invalid json"[..]).is_none());
++        assert!(read_signal(&b"[]"[..]).is_none());
++    }
++
++    #[test]
++    fn missing_sender_is_ignored() {
++        let missing = env::temp_dir().join(format!("t1-workstream-absent-{}", std::process::id()));
++        dispatch(&missing, &signal_for(&event("Stop")).unwrap());
++    }
++
++    #[test]
++    fn slow_sender_is_killed_and_reaped() {
++        let mut child = Command::new(env::current_exe().unwrap())
++            .args(["--exact", "tests::child_process_fixture", "--nocapture"])
++            .env("T1_WORKSTREAM_CLAUDE_TEST_SLOW_CHILD", "1")
++            .stdin(Stdio::null())
++            .stdout(Stdio::null())
++            .stderr(Stdio::null())
++            .spawn()
++            .unwrap();
++        let started = Instant::now();
++        finish_child(&mut child, Duration::from_millis(30));
++        assert!(started.elapsed() < Duration::from_secs(2));
++        assert!(child.try_wait().unwrap().is_some());
++    }
++
++    #[test]
++    fn child_process_fixture() {
++        if env::var_os("T1_WORKSTREAM_CLAUDE_TEST_SLOW_CHILD").is_some() {
++            thread::sleep(Duration::from_secs(10));
++        }
++    }
++}
+diff --git a/crates/t1-touchbar/src/bin/t1-workstream-codex.rs b/crates/t1-touchbar/src/bin/t1-workstream-codex.rs
+new file mode 100644
+index 0000000..6a985f7
+--- /dev/null
++++ b/crates/t1-touchbar/src/bin/t1-workstream-codex.rs
+@@ -0,0 +1,257 @@
++//! Optional, advisory Codex lifecycle adapter. Never forwards conversation content.
++
++use std::env;
++use std::hash::{DefaultHasher, Hash, Hasher};
++use std::io::{self, Read, Write};
++use std::path::{Path, PathBuf};
++use std::process::{Child, Command, Stdio};
++use std::thread;
++use std::time::{Duration, Instant};
++
++use serde_json::Value;
++
++const MAX_INPUT_BYTES: usize = 64 * 1024;
++const MAX_IDENTIFIER_BYTES: usize = 512;
++const CHILD_DEADLINE: Duration = Duration::from_millis(200);
++const CHILD_POLL: Duration = Duration::from_millis(5);
++
++#[derive(Debug, PartialEq, Eq)]
++struct Signal {
++    operation: &'static str,
++    id: String,
++    label: &'static str,
++}
++
++fn main() {
++    if let Some(signal) = read_signal(io::stdin().lock())
++        && let Some(executable) = sibling_executable()
++    {
++        dispatch(&executable, &signal);
++    }
++    // Stop requires JSON; this also remains harmless for the other events.
++    // A missing renderer, bad payload, or broken output pipe must not affect Codex.
++    let _ = io::stdout().lock().write_all(b"{}\n");
++}
++
++fn read_signal(input: impl Read) -> Option<Signal> {
++    let mut bytes = Vec::new();
++    input
++        .take(u64::try_from(MAX_INPUT_BYTES).ok()?.saturating_add(1))
++        .read_to_end(&mut bytes)
++        .ok()?;
++    if bytes.len() > MAX_INPUT_BYTES {
++        return None;
++    }
++    let value: Value = serde_json::from_slice(&bytes).ok()?;
++    signal_for(&value)
++}
++
++fn signal_for(value: &Value) -> Option<Signal> {
++    let (operation, label) = match value.get("hook_event_name")?.as_str()? {
++        "UserPromptSubmit" => ("begin", "WORKING"),
++        "Stop" => ("attention", "RESPONSE READY"),
++        "Interrupt" => ("attention", "INTERRUPTED"),
++        _ => return None,
++    };
++    let session = identifier(value.get("session_id")?)?;
++    let turn = identifier(value.get("turn_id")?)?;
++    Some(Signal {
++        operation,
++        id: operation_id(session, turn),
++        label,
++    })
++}
++
++fn identifier(value: &Value) -> Option<&str> {
++    let text = value.as_str()?;
++    // The documented contract says string, without prescribing an ID alphabet.
++    // These values are hashed, never used as paths, labels, or raw arguments.
++    if text.is_empty() || text.len() > MAX_IDENTIFIER_BYTES {
++        return None;
++    }
++    Some(text)
++}
++
++fn operation_id(session: &str, turn: &str) -> String {
++    // IDs correlate lifecycle events only. Hashing keeps raw session identifiers
++    // out of command arguments and renderer state; it is not anonymization.
++    let mut hash = DefaultHasher::new();
++    (session, turn).hash(&mut hash);
++    format!("codex-{:016x}", hash.finish())
++}
++
++fn sibling_executable() -> Option<PathBuf> {
++    Some(env::current_exe().ok()?.parent()?.join("t1-workstream"))
++}
++
++fn dispatch(executable: &Path, signal: &Signal) {
++    let Ok(mut child) = Command::new(executable)
++        .args([signal.operation, signal.id.as_str(), signal.label])
++        .stdin(Stdio::null())
++        .stdout(Stdio::null())
++        .stderr(Stdio::null())
++        .spawn()
++    else {
++        return;
++    };
++    finish_child(&mut child, CHILD_DEADLINE);
++}
++
++fn finish_child(child: &mut Child, deadline: Duration) {
++    let started = Instant::now();
++    loop {
++        match child.try_wait() {
++            Ok(Some(_)) => return,
++            Ok(None) if started.elapsed() < deadline => thread::sleep(CHILD_POLL),
++            Ok(None) | Err(_) => {
++                let _ = child.kill();
++                let _ = child.wait();
++                return;
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++
++    fn event(name: &str) -> Value {
++        json!({
++            "hook_event_name": name,
++            "session_id": "synthetic-session-1",
++            "turn_id": "synthetic-turn-1",
++        })
++    }
++
++    #[test]
++    fn supported_events_emit_only_fixed_labels() {
++        for (name, operation, label) in [
++            ("UserPromptSubmit", "begin", "WORKING"),
++            ("Stop", "attention", "RESPONSE READY"),
++            ("Interrupt", "attention", "INTERRUPTED"),
++        ] {
++            let mut input = event(name);
++            input["prompt"] = json!("SYNTHETIC PRIVATE PROMPT");
++            input["last_assistant_message"] = json!("SYNTHETIC PRIVATE OUTPUT");
++            input["tool_input"] = json!({"command": "SYNTHETIC PRIVATE COMMAND"});
++            input["transcript_path"] = json!("/synthetic/transcript-do-not-open");
++            let signal = signal_for(&input).unwrap();
++            assert_eq!(signal.operation, operation);
++            assert_eq!(signal.label, label);
++            assert!(signal.id.starts_with("codex-"));
++            assert!(!format!("{signal:?}").contains("PRIVATE"));
++            assert!(!signal.id.contains("synthetic"));
++        }
++    }
++
++    #[test]
++    fn sessions_and_turns_have_distinct_operation_ids() {
++        assert_eq!(
++            operation_id("session-a", "turn-a"),
++            operation_id("session-a", "turn-a")
++        );
++        assert_ne!(
++            operation_id("session-a", "turn-a"),
++            operation_id("session-b", "turn-a")
++        );
++        assert_ne!(
++            operation_id("session-a", "turn-a"),
++            operation_id("session-a", "turn-b")
++        );
++        assert_ne!(operation_id("a", "bc"), operation_id("ab", "c"));
++    }
++
++    #[test]
++    fn malformed_or_unsupported_events_are_ignored() {
++        for name in [
++            "PermissionRequest",
++            "PreToolUse",
++            "PostToolUse",
++            "SessionStart",
++            "SubagentStop",
++            "",
++        ] {
++            assert!(signal_for(&event(name)).is_none());
++        }
++        for bad in [
++            json!(null),
++            json!(9),
++            json!(""),
++            json!("a".repeat(MAX_IDENTIFIER_BYTES + 1)),
++        ] {
++            let mut input = event("Stop");
++            input["turn_id"] = bad;
++            assert!(signal_for(&input).is_none());
++        }
++        let mut missing = event("Stop");
++        missing.as_object_mut().unwrap().remove("session_id");
++        assert!(signal_for(&missing).is_none());
++        assert!(read_signal(&b"invalid json"[..]).is_none());
++        assert!(read_signal(&b"[]"[..]).is_none());
++    }
++
++    #[test]
++    fn identifiers_are_opaque_strings_without_a_format_assumption() {
++        let mut input = event("Stop");
++        input["session_id"] = json!("synthetic:session/東京");
++        input["turn_id"] = json!("synthetic turn with\ncontrol");
++        let signal = signal_for(&input).unwrap();
++        assert_eq!(signal.id.len(), "codex-".len() + 16);
++        assert!(
++            signal.id["codex-".len()..]
++                .bytes()
++                .all(|byte| byte.is_ascii_hexdigit())
++        );
++    }
++
++    #[test]
++    fn input_has_a_strict_byte_limit() {
++        let mut input = serde_json::to_vec(&event("Stop")).unwrap();
++        input.resize(MAX_INPUT_BYTES, b' ');
++        assert!(read_signal(input.as_slice()).is_some());
++        input.push(b' ');
++        assert!(read_signal(input.as_slice()).is_none());
++    }
++
++    #[test]
++    fn read_errors_are_ignored() {
++        struct BrokenInput;
++        impl Read for BrokenInput {
++            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
++                Err(io::Error::other("synthetic input failure"))
++            }
++        }
++        assert!(read_signal(BrokenInput).is_none());
++    }
++
++    #[test]
++    fn missing_sibling_does_not_fail_the_hook() {
++        let missing = env::temp_dir().join(format!("t1-workstream-absent-{}", std::process::id()));
++        dispatch(&missing, &signal_for(&event("Stop")).unwrap());
++    }
++
++    #[test]
++    fn slow_child_is_killed_and_reaped() {
++        let mut child = Command::new(env::current_exe().unwrap())
++            .args(["--exact", "tests::child_process_fixture", "--nocapture"])
++            .env("T1_WORKSTREAM_TEST_SLOW_CHILD", "1")
++            .stdin(Stdio::null())
++            .stdout(Stdio::null())
++            .stderr(Stdio::null())
++            .spawn()
++            .unwrap();
++        let started = Instant::now();
++        finish_child(&mut child, Duration::from_millis(30));
++        assert!(started.elapsed() < Duration::from_secs(2));
++        assert!(child.try_wait().unwrap().is_some());
++    }
++
++    #[test]
++    fn child_process_fixture() {
++        if env::var_os("T1_WORKSTREAM_TEST_SLOW_CHILD").is_some() {
++            thread::sleep(Duration::from_secs(10));
++        }
++    }
++}
+diff --git a/crates/t1-touchbar/src/bin/t1-workstream.rs b/crates/t1-touchbar/src/bin/t1-workstream.rs
+new file mode 100644
+index 0000000..d51a8b7
+--- /dev/null
++++ b/crates/t1-touchbar/src/bin/t1-workstream.rs
+@@ -0,0 +1,151 @@
++//! Explicit local command activity for the optional Workstream ribbon.
++
++use std::env;
++use std::ffi::OsString;
++use std::io;
++use std::os::unix::process::ExitStatusExt;
++use std::process::{Command, ExitCode, ExitStatus};
++use std::thread;
++use std::time::{Duration, Instant};
++
++use t1_touchbar::workstream::{
++    WorkstreamPhase, WorkstreamWriter, generation_for_id, random_generation,
++};
++
++const USAGE: &str = "Usage: t1-workstream run LABEL -- COMMAND [ARG...]\n       t1-workstream begin ID LABEL\n       t1-workstream update ID LABEL\n       t1-workstream done|failed|attention ID [LABEL]\n\nIDs must be unique per operation. Only the explicit label is displayed.\nThe latest operation wins. Stale activity goes quiet; no progress is inferred.\nDone, failed, and attention finish an operation; later updates are ignored.";
++
++fn main() -> ExitCode {
++    let arguments: Vec<OsString> = env::args_os().skip(1).collect();
++    match arguments.first().and_then(|argument| argument.to_str()) {
++        Some("run") if arguments.len() >= 4 && arguments[2] == "--" => {
++            run_command(&arguments[1], &arguments[3..])
++        }
++        Some("--help" | "-h") => {
++            println!("{USAGE}");
++            ExitCode::SUCCESS
++        }
++        Some("begin" | "update" | "done" | "failed" | "attention") => event_command(&arguments),
++        _ => {
++            eprintln!("{USAGE}");
++            ExitCode::from(2)
++        }
++    }
++}
++
++fn run_command(label: &OsString, command: &[OsString]) -> ExitCode {
++    let mut child = match Command::new(&command[0]).args(&command[1..]).spawn() {
++        Ok(child) => child,
++        Err(error) => {
++            eprintln!("t1-workstream: command could not be started");
++            return ExitCode::from(if error.kind() == io::ErrorKind::NotFound {
++                127
++            } else {
++                126
++            });
++        }
++    };
++    // UI failure never prevents execution, changes the command, or captures its I/O.
++    let writer = WorkstreamWriter::from_environment().ok();
++    let generation = random_generation().ok();
++    let activity = writer
++        .as_ref()
++        .zip(generation)
++        .filter(|(writer, generation)| writer.begin(*generation, &label.to_string_lossy()).is_ok());
++    let mut heartbeat = Instant::now();
++    loop {
++        match child.try_wait() {
++            Ok(Some(status)) => {
++                if let Some((writer, generation)) = activity {
++                    let phase = if status.success() {
++                        WorkstreamPhase::Done
++                    } else {
++                        WorkstreamPhase::Failed
++                    };
++                    let _ = writer.update(generation, phase, None);
++                }
++                return status_code(status);
++            }
++            Ok(None) => {}
++            Err(_) => {
++                // Waiting is still attempted after a transient status-query error.
++                return child.wait().map_or(ExitCode::FAILURE, status_code);
++            }
++        }
++        if heartbeat.elapsed() >= Duration::from_secs(1) {
++            if let Some((writer, generation)) = activity {
++                let _ = writer.update(generation, WorkstreamPhase::Running, None);
++            }
++            heartbeat = Instant::now();
++        }
++        thread::sleep(Duration::from_millis(50));
++    }
++}
++
++fn status_code(status: ExitStatus) -> ExitCode {
++    let code = status
++        .code()
++        .unwrap_or_else(|| 128 + status.signal().unwrap_or(1));
++    ExitCode::from(u8::try_from(code).unwrap_or(1))
++}
++
++fn event_command(arguments: &[OsString]) -> ExitCode {
++    let Some(action) = arguments[0].to_str() else {
++        return ExitCode::from(2);
++    };
++    let valid_count = if action == "begin" || action == "update" {
++        arguments.len() == 3
++    } else {
++        (2..=3).contains(&arguments.len())
++    };
++    let Some(id) = arguments.get(1).and_then(|argument| argument.to_str()) else {
++        eprintln!("{USAGE}");
++        return ExitCode::from(2);
++    };
++    if !valid_count || id.is_empty() || id.len() > 256 {
++        eprintln!("{USAGE}");
++        return ExitCode::from(2);
++    }
++    let result = (|| {
++        let writer = WorkstreamWriter::from_environment()?;
++        let generation = generation_for_id(id);
++        match action {
++            "begin" => writer.begin(generation, &arguments[2].to_string_lossy()),
++            "update" => writer
++                .update(
++                    generation,
++                    WorkstreamPhase::Running,
++                    Some(&arguments[2].to_string_lossy()),
++                )
++                .map(|_| ()),
++            _ => {
++                let phase = match action {
++                    "done" => WorkstreamPhase::Done,
++                    "failed" => WorkstreamPhase::Failed,
++                    _ => WorkstreamPhase::Attention,
++                };
++                let label = arguments.get(2).map(|argument| argument.to_string_lossy());
++                writer
++                    .update(generation, phase, label.as_deref())
++                    .map(|_| ())
++            }
++        }
++    })();
++    if result.is_err() {
++        eprintln!("t1-workstream: activity display unavailable");
++        ExitCode::FAILURE
++    } else {
++        ExitCode::SUCCESS
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn preserves_failure_and_signal_exit_codes() {
++        // These raw wait statuses are synthetic Linux/POSIX values.
++        assert_eq!(status_code(ExitStatus::from_raw(7 << 8)), ExitCode::from(7));
++        assert_eq!(status_code(ExitStatus::from_raw(15)), ExitCode::from(143));
++    }
++}
+diff --git a/crates/t1-touchbar/src/builtin_renderer.rs b/crates/t1-touchbar/src/builtin_renderer.rs
+index 90cead9..4e6896b 100644
+--- a/crates/t1-touchbar/src/builtin_renderer.rs
++++ b/crates/t1-touchbar/src/builtin_renderer.rs
+@@ -26,6 +26,8 @@ use crate::stock_slice::{
+     FunctionKey, StepDirection, StockAction, StockBar, StockCapabilities, StockLevels,
+ };
+ use crate::touch_id_overlay::TouchIdOverlay;
++use crate::workstream::{WorkstreamEvent, WorkstreamReader};
++use crate::workstream_visual::WorkstreamVisual;
+ 
+ const BUFFER_ID: u32 = 1;
+ const FIRST_FRAME_ID: u64 = 1;
+@@ -71,13 +73,22 @@ impl std::error::Error for BuiltinRendererError {}
+ 
+ /// Runs the built-in renderer and reconnects forever with capped backoff.
+ pub fn run_forever(provider_path: Option<&Path>) {
++    run_forever_with_layout(provider_path, false);
++}
++
++/// Runs the optional Tokyo Night Workstream layout with local activity events.
++pub fn run_workstream_forever(provider_path: Option<&Path>) {
++    run_forever_with_layout(provider_path, true);
++}
++
++fn run_forever_with_layout(provider_path: Option<&Path>, workstream: bool) {
+     let provider = provider_path.and_then(DesktopProvider::start);
+     let mut delay = INITIAL_RECONNECT_DELAY;
+     loop {
+         if let Err(error) = t1_platform::diagnostics::observe(
+             t1_platform::diagnostics::Component::Renderer,
+             t1_platform::diagnostics::Stage::RendererConnect,
+-            || run_once(provider.as_ref()),
++            || run_once(provider.as_ref(), workstream),
+         ) {
+             eprintln!("t1-touchbar: {error}; reconnecting");
+         }
+@@ -90,7 +101,10 @@ fn next_reconnect_delay(delay: Duration) -> Duration {
+     delay.saturating_mul(2).min(MAX_RECONNECT_DELAY)
+ }
+ 
+-fn run_once(provider: Option<&DesktopProvider>) -> Result<(), BuiltinRendererError> {
++fn run_once(
++    provider: Option<&DesktopProvider>,
++    workstream: bool,
++) -> Result<(), BuiltinRendererError> {
+     let NegotiatedConnection {
+         mut connection,
+         request_ids,
+@@ -104,12 +118,28 @@ fn run_once(provider: Option<&DesktopProvider>) -> Result<(), BuiltinRendererErr
+         request_ids,
+         stock_capabilities(features, ack.minor),
+     )?;
++    if workstream {
++        session.enable_workstream(
++            std::env::var_os("T1_WORKSTREAM_REDUCED_MOTION").is_some_and(|value| value == "1"),
++        );
++    }
+     session.register(&connection)?;
+     let overlay_watcher = OverlayWatcher::start();
+     let clock = Instant::now();
++    let mut workstream_reader = workstream
++        .then(WorkstreamReader::from_environment)
++        .flatten();
++    let mut next_workstream_poll = Duration::ZERO;
+ 
+     loop {
+-        session.advance(clock.elapsed(), &connection, provider)?;
++        let now = clock.elapsed();
++        if now >= next_workstream_poll {
++            if let Some(reader) = workstream_reader.as_mut() {
++                session.set_workstream(reader.poll(), now);
++            }
++            next_workstream_poll = now + Duration::from_millis(100);
++        }
++        session.advance(now, &connection, provider)?;
+         if let Some(state) = provider.and_then(DesktopProvider::take_latest) {
+             session.set_desktop_state(state)?;
+             session.submit_if_ready(&connection)?;
+@@ -329,6 +359,14 @@ struct InFlightFrame {
+     acknowledged: bool,
+ }
+ 
++#[derive(Clone, Copy, Eq, PartialEq)]
++struct BaseAppearance {
++    stock: StockBar,
++    fn_visible: bool,
++    levels: StockLevels,
++    pressed: Option<StockAction>,
++}
++
+ struct RendererSession {
+     dimensions: DisplayDimensions,
+     stride: u32,
+@@ -360,6 +398,9 @@ struct RendererSession {
+     next_frame_id: u64,
+     request_ids: RequestIds,
+     pending: BTreeMap<u32, PendingRequest>,
++    workstream: Option<WorkstreamVisual>,
++    base_appearance: Option<BaseAppearance>,
++    base_pixels: Vec<u8>,
+ }
+ 
+ impl RendererSession {
+@@ -411,9 +452,33 @@ impl RendererSession {
+             next_frame_id: FIRST_FRAME_ID,
+             request_ids,
+             pending: BTreeMap::new(),
++            workstream: None,
++            base_appearance: None,
++            base_pixels: vec![
++                0;
++                usize::try_from(byte_length)
++                    .map_err(|_| BuiltinRendererError::Frame)?
++            ],
+         })
+     }
+ 
++    fn enable_workstream(&mut self, reduced_motion: bool) {
++        self.stock = self.stock.with_workstream();
++        self.input.set_stock(self.stock);
++        self.workstream = Some(WorkstreamVisual::new(reduced_motion));
++        self.dirty = true;
++    }
++
++    fn set_workstream(&mut self, event: Option<WorkstreamEvent>, now: Duration) {
++        if let Some(visual) = self.workstream.as_mut() {
++            let changed = visual.set_event(event, now);
++            self.dirty |= changed
++                && !self.display_off
++                && !self.input.fn_pressed()
++                && self.overlay_visual_state.is_none();
++        }
++    }
++
+     fn register(&mut self, connection: &HardwareConnection) -> Result<(), BuiltinRendererError> {
+         let request_id = self.allocate_request(PendingRequest::Register)?;
+         let message = Envelope {
+@@ -576,7 +641,23 @@ impl RendererSession {
+             self.input.wait_for_touch_release = frame.contacts.iter().any(|contact| contact.tip);
+             frame.contacts.clear();
+         }
+-        self.input.ingest_at(&frame, self.overlay_state, self.now)
++        let previous = self.input.pressed();
++        let previous_fn = self.input.fn_pressed();
++        let outcome = self.input.ingest_at(&frame, self.overlay_state, self.now)?;
++        if let Some(visual) = self.workstream.as_mut() {
++            if previous_fn != self.input.fn_pressed()
++                || self.display_off
++                || self.overlay_state.is_some()
++            {
++                visual.cancel_touch();
++            } else if previous != self.input.pressed()
++                && let Some(action) = self.input.pressed()
++                && let Some(bounds) = self.stock.action_bounds(action, self.input.fn_pressed())
++            {
++                visual.press(bounds, self.now);
++            }
++        }
++        Ok(outcome)
+     }
+ 
+     fn send_keys(
+@@ -745,6 +826,27 @@ impl RendererSession {
+             self.frame.as_mut_slice().fill(0);
+             return Ok(());
+         }
++        let fn_visible = self.input.fn_pressed() && self.overlay_visual_state.is_none();
++        let appearance = BaseAppearance {
++            stock: self.stock,
++            fn_visible,
++            levels: self.levels,
++            pressed: self.input.pressed(),
++        };
++        if self.base_appearance != Some(appearance) {
++            let mut base = Xrgb8888Frame::new(
++                self.dimensions.width(),
++                self.dimensions.height(),
++                self.stride,
++                &mut self.base_pixels,
++            )
++            .map_err(|_| BuiltinRendererError::Frame)?;
++            self.stock
++                .render_pressed(&mut base, fn_visible, self.levels, self.input.pressed())
++                .map_err(|_| BuiltinRendererError::Frame)?;
++            self.base_appearance = Some(appearance);
++        }
++        self.frame.as_mut_slice().copy_from_slice(&self.base_pixels);
+         let mut frame = Xrgb8888Frame::new(
+             self.dimensions.width(),
+             self.dimensions.height(),
+@@ -752,10 +854,21 @@ impl RendererSession {
+             self.frame.as_mut_slice(),
+         )
+         .map_err(|_| BuiltinRendererError::Frame)?;
+-        let fn_visible = self.input.fn_pressed() && self.overlay_visual_state.is_none();
+-        self.stock
+-            .render_pressed(&mut frame, fn_visible, self.levels, self.input.pressed())
+-            .map_err(|_| BuiltinRendererError::Frame)?;
++        if let Some(visual) = self.workstream.as_ref() {
++            if !fn_visible
++                && self.overlay_visual_state.is_none()
++                && let Some(bounds) = self.stock.workstream_bounds()
++            {
++                visual
++                    .render(&mut frame, bounds, self.now)
++                    .map_err(|_| BuiltinRendererError::Frame)?;
++            }
++            if self.overlay_visual_state.is_none() {
++                visual
++                    .render_touch(&mut frame, self.now)
++                    .map_err(|_| BuiltinRendererError::Frame)?;
++            }
++        }
+         if self.overlay_opacity > 0 {
+             let left = self.stock.escape_right();
+             if left < self.dimensions.width() {
+@@ -814,6 +927,9 @@ impl RendererSession {
+             match state {
+                 Some(state) => {
+                     self.input.cancel_repeat();
++                    if let Some(visual) = self.workstream.as_mut() {
++                        visual.cancel_touch();
++                    }
+                     self.overlay_visual_state = Some(state);
+                     self.overlay_target_opacity = u8::MAX;
+                 }
+@@ -830,6 +946,11 @@ impl RendererSession {
+         provider: Option<&DesktopProvider>,
+     ) -> Result<(), BuiltinRendererError> {
+         self.now = now;
++        if let Some(visual) = self.workstream.as_mut() {
++            let controls_visible = !self.display_off && self.overlay_visual_state.is_none();
++            let ribbon_visible = controls_visible && !self.input.fn_pressed();
++            self.dirty |= visual.advance(now, ribbon_visible, controls_visible);
++        }
+         self.advance_overlay_fade(now);
+         self.advance_enrollment_progress(now);
+         if !self.display_off
+@@ -895,6 +1016,9 @@ impl RendererSession {
+             self.display_off = state.display_off;
+             if self.display_off {
+                 self.input.cancel_touches();
++                if let Some(visual) = self.workstream.as_mut() {
++                    visual.cancel_touch();
++                }
+             }
+             self.dirty = true;
+         }
+@@ -925,12 +1049,15 @@ impl RendererSession {
+ 
+     fn apply_desktop_state(&mut self, state: DesktopState) -> Result<(), BuiltinRendererError> {
+         let capabilities = self.hardware_capabilities | desktop_stock_capabilities(state);
+-        let stock = StockBar::new(
++        let mut stock = StockBar::new(
+             self.dimensions.width(),
+             self.dimensions.height(),
+             capabilities,
+         )
+         .map_err(|_| BuiltinRendererError::Negotiation)?;
++        if self.workstream.is_some() {
++            stock = stock.with_workstream();
++        }
+         self.stock = stock;
+         self.input.set_stock(stock);
+         self.levels.volume = state.volume;
+@@ -1240,6 +1367,7 @@ mod tests {
+     use std::os::unix::net::UnixStream;
+ 
+     mod display_power;
++    mod workstream_session_tests;
+ 
+     fn dimensions() -> DisplayDimensions {
+         DisplayDimensions::new(130, 20).expect("valid synthetic dimensions")
+diff --git a/crates/t1-touchbar/src/builtin_renderer/tests/workstream_session_tests.rs b/crates/t1-touchbar/src/builtin_renderer/tests/workstream_session_tests.rs
+new file mode 100644
+index 0000000..13e03f7
+--- /dev/null
++++ b/crates/t1-touchbar/src/builtin_renderer/tests/workstream_session_tests.rs
+@@ -0,0 +1,192 @@
++use super::*;
++use crate::workstream::WorkstreamPhase;
++
++fn running_event() -> WorkstreamEvent {
++    WorkstreamEvent {
++        generation: 1,
++        phase: WorkstreamPhase::Running,
++        label: "BUILDING".into(),
++    }
++}
++
++#[test]
++fn workstream_coalesces_events_without_writing_a_frame_owned_by_hardware() {
++    let (renderer, peer) = seqpacket::pair_for_test().expect("synthetic protocol socket pair");
++    let connection = HardwareConnection::new(renderer);
++    let peer = SeqPacketClient::new(peer.as_fd());
++    let mut session = session();
++    session.enable_workstream(false);
++    session.registered = true;
++    session.submit_if_ready(&connection).unwrap();
++    let held_pixels = session.frame.as_mut_slice().to_vec();
++    let mut packet = vec![0; MAX_PACKET_LENGTH];
++    let length = peer.receive(&mut packet).expect("initial frame submission");
++    let request = wire::decode_client(
++        &packet[..length],
++        AncillaryMetadata::default(),
++        Some(dimensions()),
++    )
++    .unwrap();
++    let ClientMessage::SubmitFrame(submit) = request.message else {
++        panic!("expected a frame submission");
++    };
++    session
++        .handle(
++            Envelope {
++                request_id: request.request_id,
++                message: ServiceMessage::Ack,
++            },
++            &connection,
++        )
++        .unwrap();
++
++    session.set_workstream(Some(running_event()), Duration::ZERO);
++    for time in [34, 68, 102] {
++        session
++            .advance(Duration::from_millis(time), &connection, None)
++            .unwrap();
++        assert_eq!(session.frame.as_mut_slice(), held_pixels);
++        assert_eq!(peer.receive(&mut packet), Err(SeqPacketError::WouldBlock));
++    }
++    assert!(session.dirty);
++    session
++        .handle(
++            Envelope {
++                request_id: 0,
++                message: ServiceMessage::FrameReleased(wire::FrameReleased {
++                    buffer_id: BUFFER_ID,
++                    frame_id: submit.frame_id,
++                }),
++            },
++            &connection,
++        )
++        .unwrap();
++    assert_ne!(session.frame.as_mut_slice(), held_pixels);
++    assert!(!session.dirty);
++    let length = peer.receive(&mut packet).expect("one coalesced frame");
++    let request = wire::decode_client(
++        &packet[..length],
++        AncillaryMetadata::default(),
++        Some(dimensions()),
++    )
++    .unwrap();
++    assert!(matches!(request.message, ClientMessage::SubmitFrame(_)));
++    assert_eq!(peer.receive(&mut packet), Err(SeqPacketError::WouldBlock));
++}
++
++#[test]
++fn running_workstream_yields_the_complete_function_row_and_taps() {
++    let mut workstream = session();
++    workstream.enable_workstream(false);
++    workstream.set_workstream(Some(running_event()), Duration::ZERO);
++    workstream
++        .advance(Duration::from_millis(34), &inert_connection(), None)
++        .unwrap();
++    workstream.render().unwrap();
++    let activity_pixels = workstream.frame.as_mut_slice().to_vec();
++    assert!(
++        workstream
++            .observe_input(input(1, true, Vec::new()))
++            .unwrap()
++            .redraw
++    );
++    workstream.render().unwrap();
++    // Fn displays the same Tokyo function row whether activity is running or
++    // idle. The default renderer uses a separate monochrome palette.
++    let mut idle = session();
++    idle.enable_workstream(true);
++    idle.observe_input(input(1, true, Vec::new())).unwrap();
++    idle.render().unwrap();
++    assert_eq!(workstream.frame.as_mut_slice(), idle.frame.as_mut_slice());
++    assert_ne!(workstream.frame.as_mut_slice(), activity_pixels);
++
++    // A settling redraw is allowed at the Fn transition, then activity stops.
++    workstream
++        .advance(Duration::from_millis(68), &inert_connection(), None)
++        .unwrap();
++    workstream.dirty = false;
++    workstream
++        .advance(Duration::from_secs(1), &inert_connection(), None)
++        .unwrap();
++    assert!(!workstream.dirty);
++    workstream
++        .observe_input(input(2, true, vec![contact(1, 15, 8)]))
++        .unwrap();
++    let outcome = workstream
++        .observe_input(input(3, true, Vec::new()))
++        .unwrap();
++    assert_eq!(outcome.actions, [StockAction::Function(FunctionKey::F1)]);
++    workstream
++        .observe_input(input(4, false, Vec::new()))
++        .unwrap();
++    workstream.render().unwrap();
++    assert_ne!(workstream.frame.as_mut_slice(), idle.frame.as_mut_slice());
++}
++
++#[test]
++fn blacking_out_cancels_touch_feedback_before_a_fast_wake() {
++    let mut session = session();
++    session.enable_workstream(false);
++    session.render().unwrap();
++    let idle_pixels = session.frame.as_mut_slice().to_vec();
++    session
++        .observe_input(input(1, false, vec![contact(1, 5, 10)]))
++        .unwrap();
++    session.render().unwrap();
++    assert_ne!(session.frame.as_mut_slice(), idle_pixels);
++    let off = DesktopState {
++        capabilities: DesktopCapabilities::DISPLAY_POWER,
++        display_off: true,
++        ..DesktopState::default()
++    };
++    session.set_desktop_state(off).unwrap();
++    session.render().unwrap();
++    assert!(session.frame.as_mut_slice().iter().all(|byte| *byte == 0));
++
++    // No animation tick between these power notifications: blanking itself
++    // must discard the old glow, rather than relying on the next timer tick.
++    session
++        .set_desktop_state(DesktopState {
++            display_off: false,
++            ..off
++        })
++        .unwrap();
++    session.render().unwrap();
++    assert_eq!(session.frame.as_mut_slice(), idle_pixels);
++    let release = session.observe_input(input(2, false, Vec::new())).unwrap();
++    assert!(release.actions.is_empty());
++}
++
++#[test]
++fn idle_and_hidden_event_changes_do_not_keep_the_session_dirty() {
++    let mut session = session();
++    session.enable_workstream(false);
++    session.render().unwrap();
++    session.dirty = false;
++    session
++        .advance(Duration::from_secs(1), &inert_connection(), None)
++        .unwrap();
++    assert!(!session.dirty);
++
++    session
++        .set_desktop_state(DesktopState {
++            capabilities: DesktopCapabilities::DISPLAY_POWER,
++            display_off: true,
++            ..DesktopState::default()
++        })
++        .unwrap();
++    session.render().unwrap();
++    session.dirty = false;
++    session.set_workstream(Some(running_event()), Duration::from_secs(1));
++    session
++        .advance(Duration::from_secs(2), &inert_connection(), None)
++        .unwrap();
++    assert!(!session.dirty);
++    assert!(session.frame.as_mut_slice().iter().all(|byte| *byte == 0));
++
++    session.set_workstream(None, Duration::from_secs(2));
++    session
++        .advance(Duration::from_secs(3), &inert_connection(), None)
++        .unwrap();
++    assert!(!session.dirty);
++}
+diff --git a/crates/t1-touchbar/src/lib.rs b/crates/t1-touchbar/src/lib.rs
+index 43722b7..d7bf3e0 100644
+--- a/crates/t1-touchbar/src/lib.rs
++++ b/crates/t1-touchbar/src/lib.rs
+@@ -12,3 +12,5 @@ mod stock_icons;
+ mod stock_labels;
+ pub mod stock_slice;
+ pub mod touch_id_overlay;
++pub mod workstream;
++mod workstream_visual;
+diff --git a/crates/t1-touchbar/src/stock_slice.rs b/crates/t1-touchbar/src/stock_slice.rs
+index 4c0ae87..9ca69b9 100644
+--- a/crates/t1-touchbar/src/stock_slice.rs
++++ b/crates/t1-touchbar/src/stock_slice.rs
+@@ -15,25 +15,57 @@ const PLATE_Y: u32 = 0;
+ const PLATE_HEIGHT: u32 = 60;
+ const PLATE_RADIUS: u32 = 8;
+ 
+-const BACKGROUND: Rgb = Rgb {
+-    red: 0,
+-    green: 0,
+-    blue: 0,
++#[derive(Clone, Copy)]
++struct Palette {
++    background: Rgb,
++    plate: Rgb,
++    pressed_plate: Rgb,
++    label: Rgb,
++}
++
++const STOCK_PALETTE: Palette = Palette {
++    background: Rgb {
++        red: 0,
++        green: 0,
++        blue: 0,
++    },
++    plate: Rgb {
++        red: 53,
++        green: 53,
++        blue: 53,
++    },
++    pressed_plate: Rgb {
++        red: 76,
++        green: 76,
++        blue: 76,
++    },
++    label: Rgb {
++        red: 242,
++        green: 242,
++        blue: 242,
++    },
+ };
+-const PLATE: Rgb = Rgb {
+-    red: 53,
+-    green: 53,
+-    blue: 53,
+-};
+-const PRESSED_PLATE: Rgb = Rgb {
+-    red: 76,
+-    green: 76,
+-    blue: 76,
+-};
+-const LABEL: Rgb = Rgb {
+-    red: 242,
+-    green: 242,
+-    blue: 242,
++const WORKSTREAM_PALETTE: Palette = Palette {
++    background: Rgb {
++        red: 26,
++        green: 27,
++        blue: 38,
++    },
++    plate: Rgb {
++        red: 36,
++        green: 40,
++        blue: 59,
++    },
++    pressed_plate: Rgb {
++        red: 65,
++        green: 72,
++        blue: 104,
++    },
++    label: Rgb {
++        red: 192,
++        green: 202,
++        blue: 245,
++    },
+ };
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+@@ -211,6 +243,61 @@ const NORMAL_CONTROLS: [NativeControl; 10] = [
+     },
+ ];
+ 
++// Keep controls fixed while the center reports work. Fn continues to expose
++// the same full-width function row as the default layout.
++const WORKSTREAM_CONTROLS: [NativeControl; 10] = [
++    NativeControl {
++        control: Control::DisplayDown,
++        x: 194,
++        width: 98,
++    },
++    NativeControl {
++        control: Control::DisplayUp,
++        x: 300,
++        width: 98,
++    },
++    NativeControl {
++        control: Control::KeyboardDown,
++        x: 430,
++        width: 98,
++    },
++    NativeControl {
++        control: Control::KeyboardUp,
++        x: 536,
++        width: 98,
++    },
++    NativeControl {
++        control: Control::MediaPrevious,
++        x: 1_384,
++        width: 106,
++    },
++    NativeControl {
++        control: Control::MediaPlayPause,
++        x: 1_498,
++        width: 106,
++    },
++    NativeControl {
++        control: Control::MediaNext,
++        x: 1_612,
++        width: 106,
++    },
++    NativeControl {
++        control: Control::Mute,
++        x: 1_752,
++        width: 134,
++    },
++    NativeControl {
++        control: Control::VolumeDown,
++        x: 1_894,
++        width: 134,
++    },
++    NativeControl {
++        control: Control::VolumeUp,
++        x: 2_036,
++        width: 134,
++    },
++];
++
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ struct LaidOutControl {
+     control: Control,
+@@ -223,6 +310,7 @@ pub struct StockBar {
+     width: u32,
+     height: u32,
+     capabilities: StockCapabilities,
++    workstream: bool,
+ }
+ 
+ impl StockBar {
+@@ -241,6 +329,7 @@ impl StockBar {
+                 width,
+                 height,
+                 capabilities,
++                workstream: false,
+             })
+         }
+     }
+@@ -255,6 +344,57 @@ impl StockBar {
+         self.height
+     }
+ 
++    /// Reserves a fixed center ribbon without changing Escape or the Fn row.
++    #[must_use]
++    pub const fn with_workstream(mut self) -> Self {
++        self.workstream = true;
++        self
++    }
++
++    const fn palette(self) -> Palette {
++        if self.workstream {
++            WORKSTREAM_PALETTE
++        } else {
++            STOCK_PALETTE
++        }
++    }
++
++    /// The center ribbon in the normal row; Fn and overlays take precedence.
++    #[must_use]
++    pub(crate) fn workstream_bounds(self) -> Option<Rectangle> {
++        if !self.workstream {
++            return None;
++        }
++        let left = self.scaled_x(668);
++        let right = self.scaled_x(1_350);
++        (right > left).then_some(Rectangle {
++            x: left,
++            y: 0,
++            width: right - left,
++            height: self.height,
++        })
++    }
++
++    /// Bounds of an available action for clipping localized touch feedback.
++    #[must_use]
++    pub(crate) fn action_bounds(self, action: StockAction, fn_held: bool) -> Option<Rectangle> {
++        if fn_held {
++            return (0..FUNCTION_SLOT_COUNT)
++                .find(|slot| function_action(*slot) == Some(action))
++                .map(|slot| self.function_slot(slot))
++                .filter(|bounds| bounds.width > 0);
++        }
++        if action == StockAction::Escape {
++            return Some(self.escape_bounds()).filter(|bounds| bounds.width > 0);
++        }
++        self.normal_controls()
++            .into_iter()
++            .find(|item| {
++                control_action(item.control) == action && self.control_available(item.control)
++            })
++            .map(|item| item.bounds)
++    }
++
+     #[must_use]
+     pub(crate) fn escape_right(self) -> u32 {
+         let bounds = self.escape_bounds();
+@@ -288,7 +428,7 @@ impl StockBar {
+         if frame.width() != self.width || frame.height() != self.height {
+             return Err(StockSliceError::FrameGeometryMismatch);
+         }
+-        frame.clear(BACKGROUND);
++        frame.clear(self.palette().background);
+         if fn_held {
+             self.render_function_row(frame, pressed)
+         } else {
+@@ -332,7 +472,12 @@ impl StockBar {
+         pressed: Option<StockAction>,
+     ) -> Result<(), StockSliceError> {
+         self.draw_plate(frame, self.escape_bounds(), StockAction::Escape, pressed)?;
+-        stock_art::draw_label(frame, self.escape_bounds(), stock_labels::ESC, LABEL)?;
++        stock_art::draw_label(
++            frame,
++            self.escape_bounds(),
++            stock_labels::ESC,
++            self.palette().label,
++        )?;
+         for item in self.normal_controls() {
+             if !self.control_visible(item.control) {
+                 continue;
+@@ -340,7 +485,7 @@ impl StockBar {
+             let action = control_action(item.control);
+             self.draw_plate(frame, item.bounds, action, pressed)?;
+             let symbol = control_symbol(item.control);
+-            stock_art::draw_symbol(frame, item.bounds, symbol, LABEL)?;
++            stock_art::draw_symbol(frame, item.bounds, symbol, self.palette().label)?;
+         }
+         Ok(())
+     }
+@@ -357,7 +502,7 @@ impl StockBar {
+             }
+             let action = function_action(slot).ok_or(StockSliceError::InvalidGeometry)?;
+             self.draw_plate(frame, bounds, action, pressed)?;
+-            stock_art::draw_label(frame, bounds, function_label(action)?, LABEL)?;
++            stock_art::draw_label(frame, bounds, function_label(action)?, self.palette().label)?;
+         }
+         Ok(())
+     }
+@@ -374,9 +519,9 @@ impl StockBar {
+             bounds,
+             self.scaled_y(PLATE_RADIUS).max(1),
+             if pressed == Some(action) {
+-                PRESSED_PLATE
++                self.palette().pressed_plate
+             } else {
+-                PLATE
++                self.palette().plate
+             },
+         )?;
+         Ok(())
+@@ -415,7 +560,12 @@ impl StockBar {
+     }
+ 
+     fn normal_controls(self) -> Vec<LaidOutControl> {
+-        NORMAL_CONTROLS
++        let controls = if self.workstream {
++            WORKSTREAM_CONTROLS
++        } else {
++            NORMAL_CONTROLS
++        };
++        controls
+             .into_iter()
+             .map(|item| LaidOutControl {
+                 control: item.control,
+@@ -649,6 +799,185 @@ mod tests {
+         assert_eq!(reduced.action_at(contact, false), None);
+     }
+ 
++    #[test]
++    fn workstream_reserves_an_inert_center_and_preserves_escape_and_function_keys() {
++        for width in [130, 1_085, NATIVE_WIDTH] {
++            let stock = StockBar::new(width, NATIVE_HEIGHT, all()).unwrap();
++            let bar = stock.with_workstream();
++            assert_eq!(stock.workstream_bounds(), None);
++            assert_eq!(bar.escape_bounds(), stock.escape_bounds());
++            let ribbon = bar.workstream_bounds().unwrap();
++            assert!(ribbon.width > 0);
++            assert!(ribbon.x + ribbon.width <= width);
++            let mut previous_right = bar.escape_right();
++            for item in bar.normal_controls() {
++                let bounds = item.bounds;
++                assert!(bounds.width > 0);
++                assert!(bounds.x >= previous_right);
++                assert!(bounds.x + bounds.width <= width);
++                assert!(bounds.x + bounds.width <= ribbon.x || bounds.x >= ribbon.x + ribbon.width);
++                let action = control_action(item.control);
++                assert_eq!(bar.action_bounds(action, false), Some(bounds));
++                assert_eq!(
++                    bar.action_for_gesture(
++                        tap(f64::from(bounds.x + bounds.width / 2), 30.0),
++                        false,
++                    ),
++                    Some(action),
++                );
++                previous_right = bounds.x + bounds.width;
++            }
++            // Every pixel of the reserved ribbon must remain action-free.
++            for x in ribbon.x..ribbon.x + ribbon.width {
++                assert_eq!(bar.action_for_gesture(tap(f64::from(x), 30.0), false), None);
++            }
++            for slot in 0..FUNCTION_SLOT_COUNT {
++                let action = function_action(slot).unwrap();
++                let bounds = stock.function_slot(slot);
++                assert_eq!(bar.action_bounds(action, true), Some(bounds));
++                assert_eq!(
++                    bar.action_for_gesture(
++                        tap(f64::from(bounds.x + bounds.width / 2), 30.0),
++                        true,
++                    ),
++                    Some(action),
++                );
++            }
++            assert_eq!(
++                bar.action_bounds(StockAction::Function(FunctionKey::F1), false),
++                None
++            );
++            assert_eq!(bar.action_bounds(StockAction::MediaPlayPause, true), None);
++        }
++    }
++
++    #[test]
++    fn workstream_capability_changes_never_move_keys_or_enable_missing_controls() {
++        let full = StockBar::new(NATIVE_WIDTH, NATIVE_HEIGHT, all())
++            .unwrap()
++            .with_workstream();
++        for capabilities in [
++            StockCapabilities::default(),
++            StockCapabilities::DISPLAY_BRIGHTNESS,
++            StockCapabilities::KEYBOARD_BACKLIGHT,
++            StockCapabilities::AUDIO,
++            StockCapabilities::MEDIA,
++        ] {
++            let bar = StockBar::new(NATIVE_WIDTH, NATIVE_HEIGHT, capabilities)
++                .unwrap()
++                .with_workstream();
++            assert_eq!(bar.normal_controls(), full.normal_controls());
++            assert_eq!(bar.workstream_bounds(), full.workstream_bounds());
++            assert_eq!(bar.escape_bounds(), full.escape_bounds());
++            for item in bar.normal_controls() {
++                let required = match item.control {
++                    Control::DisplayDown | Control::DisplayUp => {
++                        StockCapabilities::DISPLAY_BRIGHTNESS
++                    }
++                    Control::KeyboardDown | Control::KeyboardUp => {
++                        StockCapabilities::KEYBOARD_BACKLIGHT
++                    }
++                    Control::MediaPrevious | Control::MediaPlayPause | Control::MediaNext => {
++                        StockCapabilities::MEDIA
++                    }
++                    Control::Mute | Control::VolumeDown | Control::VolumeUp => {
++                        StockCapabilities::AUDIO
++                    }
++                };
++                let available = capabilities.contains(required);
++                let action = control_action(item.control);
++                assert_eq!(
++                    bar.action_bounds(action, false),
++                    available.then_some(item.bounds)
++                );
++                assert_eq!(
++                    bar.action_for_gesture(
++                        tap(f64::from(item.bounds.x + item.bounds.width / 2), 30.0),
++                        false,
++                    ),
++                    available.then_some(action),
++                );
++            }
++            assert_eq!(
++                bar.action_bounds(StockAction::Escape, false),
++                Some(full.escape_bounds())
++            );
++        }
++    }
++
++    #[test]
++    fn workstream_renders_clear_ribbon_and_themed_function_row() {
++        let stock = StockBar::new(NATIVE_WIDTH, NATIVE_HEIGHT, all()).unwrap();
++        let bar = stock.with_workstream();
++        let length = usize::try_from(NATIVE_WIDTH * NATIVE_HEIGHT * 4).unwrap();
++        let mut normal = vec![0_u8; length];
++        let mut stock_fn = vec![0_u8; length];
++        let mut workstream_fn = vec![0_u8; length];
++        for (layout, fn_held, pixels) in [
++            (bar, false, &mut normal),
++            (stock, true, &mut stock_fn),
++            (bar, true, &mut workstream_fn),
++        ] {
++            let mut frame =
++                Xrgb8888Frame::new(NATIVE_WIDTH, NATIVE_HEIGHT, NATIVE_WIDTH * 4, pixels).unwrap();
++            layout
++                .render(&mut frame, fn_held, StockLevels::default())
++                .unwrap();
++        }
++        assert_ne!(stock_fn, workstream_fn);
++        assert!(
++            stock_fn
++                .as_chunks::<4>()
++                .0
++                .iter()
++                .all(|pixel| { pixel[0] == pixel[1] && pixel[1] == pixel[2] })
++        );
++        assert!(
++            workstream_fn
++                .as_chunks::<4>()
++                .0
++                .iter()
++                .any(|pixel| { pixel[0] != pixel[1] || pixel[1] != pixel[2] })
++        );
++        let ribbon = bar.workstream_bounds().unwrap();
++        let color = WORKSTREAM_PALETTE.background;
++        let background = [color.blue, color.green, color.red, 0];
++        for y in 0..NATIVE_HEIGHT {
++            for x in ribbon.x..ribbon.x + ribbon.width {
++                let offset = usize::try_from((y * NATIVE_WIDTH + x) * 4).unwrap();
++                assert_eq!(&normal[offset..offset + 4], &background);
++            }
++        }
++    }
++
++    #[test]
++    fn default_rows_preserve_upstream_monochrome_colors() {
++        let bar = StockBar::new(NATIVE_WIDTH, NATIVE_HEIGHT, all()).unwrap();
++        let length = usize::try_from(NATIVE_WIDTH * NATIVE_HEIGHT * 4).unwrap();
++        for fn_held in [false, true] {
++            for pressed in [None, Some(StockAction::Escape)] {
++                let mut pixels = vec![0_u8; length];
++                let mut frame =
++                    Xrgb8888Frame::new(NATIVE_WIDTH, NATIVE_HEIGHT, NATIVE_WIDTH * 4, &mut pixels)
++                        .unwrap();
++                bar.render_pressed(&mut frame, fn_held, StockLevels::default(), pressed)
++                    .unwrap();
++                let pixels = pixels.as_chunks::<4>().0;
++                assert!(
++                    pixels
++                        .iter()
++                        .all(|pixel| pixel[0] == pixel[1] && pixel[1] == pixel[2])
++                );
++                assert!(pixels.contains(&[0, 0, 0, 0]));
++                assert!(pixels.contains(&[53, 53, 53, 0]));
++                assert!(pixels.contains(&[242, 242, 242, 0]));
++                if pressed.is_some() {
++                    assert!(pixels.contains(&[76, 76, 76, 0]));
++                }
++            }
++        }
++    }
++
+     #[test]
+     fn rendering_is_antialiased_and_pressed_state_is_distinct() {
+         let bar = StockBar::new(NATIVE_WIDTH, NATIVE_HEIGHT, all()).unwrap();
+@@ -679,10 +1008,18 @@ mod tests {
+             })
+             .unwrap();
+         assert_ne!(normal, pressed);
++        let flat_colors = [
++            STOCK_PALETTE.background,
++            STOCK_PALETTE.plate,
++            STOCK_PALETTE.label,
++        ]
++        .map(|color| [color.blue, color.green, color.red, 0]);
+         assert!(
+             normal
++                .as_chunks::<4>()
++                .0
+                 .iter()
+-                .any(|channel| !matches!(*channel, 0 | 53 | 242))
++                .any(|pixel| !flat_colors.contains(pixel))
+         );
+     }
+ 
+diff --git a/crates/t1-touchbar/src/workstream.rs b/crates/t1-touchbar/src/workstream.rs
+new file mode 100644
+index 0000000..a787431
+--- /dev/null
++++ b/crates/t1-touchbar/src/workstream.rs
+@@ -0,0 +1,582 @@
++//! Private, expiring activity hints from explicitly instrumented local work.
++//!
++//! `begin` selects the latest operation. Updates and completions must carry the
++//! same generation, so an older command cannot replace a newer operation. IDs
++//! must be unique per operation, not merely per application session. Only the
++//! supplied display label is stored; command arguments are never recorded.
++
++use std::collections::hash_map::DefaultHasher;
++use std::env;
++use std::fs::{self, File, OpenOptions};
++use std::hash::{Hash, Hasher};
++use std::io::{self, Read, Write};
++use std::os::fd::AsRawFd;
++use std::os::linux::net::SocketAddrExt;
++use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
++use std::os::unix::net::{SocketAddr, UnixDatagram};
++use std::path::{Path, PathBuf};
++use std::thread;
++use std::time::Duration;
++
++const MAX_RECORD_BYTES: u64 = 256;
++const MAX_LABEL_BYTES: usize = 24;
++const O_NONBLOCK: i32 = 0o4_000;
++const O_NOFOLLOW: i32 = 0o400_000;
++const O_PATH: i32 = 0o10_000_000;
++
++/// A truthful activity state; running carries no invented completion percentage.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum WorkstreamPhase {
++    Running,
++    Done,
++    Failed,
++    Attention,
++}
++
++impl WorkstreamPhase {
++    const fn token(self) -> &'static str {
++        match self {
++            Self::Running => "running",
++            Self::Done => "done",
++            Self::Failed => "failed",
++            Self::Attention => "attention",
++        }
++    }
++
++    const fn lifetime_ms(self) -> u64 {
++        match self {
++            Self::Running => 10_000,
++            Self::Done => 3_000,
++            Self::Failed | Self::Attention => 6_000,
++        }
++    }
++
++    fn parse(token: &str) -> Option<Self> {
++        match token {
++            "running" => Some(Self::Running),
++            "done" => Some(Self::Done),
++            "failed" => Some(Self::Failed),
++            "attention" => Some(Self::Attention),
++            _ => None,
++        }
++    }
++}
++
++/// Display data. Heartbeat timestamps are deliberately absent from equality.
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct WorkstreamEvent {
++    pub generation: u64,
++    pub phase: WorkstreamPhase,
++    pub label: String,
++}
++
++struct Record {
++    event: WorkstreamEvent,
++    updated_ms: u64,
++}
++
++impl Record {
++    fn parse(bytes: &[u8]) -> Option<Self> {
++        if bytes.len() > usize::try_from(MAX_RECORD_BYTES).ok()? || !bytes.ends_with(b"\n") {
++            return None;
++        }
++        let text = std::str::from_utf8(bytes).ok()?;
++        let fields: Vec<_> = text.lines().collect();
++        if fields.len() != 5 || fields[0] != "t1-workstream-v1" || fields[1].len() != 16 {
++            return None;
++        }
++        let generation = u64::from_str_radix(fields[1], 16).ok()?;
++        let updated_ms = fields[2].parse().ok()?;
++        let phase = WorkstreamPhase::parse(fields[3])?;
++        let label = fields[4];
++        if label.is_empty() || label.len() > MAX_LABEL_BYTES || sanitize_label(label) != label {
++            return None;
++        }
++        Some(Self {
++            event: WorkstreamEvent {
++                generation,
++                phase,
++                label: label.to_owned(),
++            },
++            updated_ms,
++        })
++    }
++
++    fn bytes(&self) -> Vec<u8> {
++        format!(
++            "t1-workstream-v1\n{:016x}\n{}\n{}\n{}\n",
++            self.event.generation,
++            self.updated_ms,
++            self.event.phase.token(),
++            self.event.label,
++        )
++        .into_bytes()
++    }
++
++    fn fresh_at(&self, now_ms: u64) -> bool {
++        now_ms
++            .checked_sub(self.updated_ms)
++            .is_some_and(|age| age < self.event.phase.lifetime_ms())
++    }
++}
++
++/// Reads a bounded private record. Missing, unsafe, malformed, or stale means quiet.
++pub struct WorkstreamReader {
++    directory: PathBuf,
++    uid: u32,
++}
++
++impl WorkstreamReader {
++    /// Uses only the caller's private runtime directory. Never creates files.
++    #[must_use]
++    pub fn from_environment() -> Option<Self> {
++        let (runtime, uid) = runtime_directory().ok()?;
++        Some(Self {
++            directory: runtime.join("t1-workstream"),
++            uid,
++        })
++    }
++
++    /// Returns the latest fresh hint, or quiet on any failure.
++    #[must_use]
++    pub fn poll(&self) -> Option<WorkstreamEvent> {
++        let record = read_record(&self.directory, self.uid).ok()?;
++        record.fresh_at(uptime_ms().ok()?).then_some(record.event)
++    }
++}
++
++/// Writes optional UI hints. Failures must never prevent the actual work.
++pub struct WorkstreamWriter {
++    directory: PathBuf,
++    uid: u32,
++}
++
++impl WorkstreamWriter {
++    /// Creates a private child of `XDG_RUNTIME_DIR` when necessary.
++    ///
++    /// # Errors
++    /// Returns an error for missing, unsafe, or unwritable runtime storage.
++    pub fn from_environment() -> io::Result<Self> {
++        let (runtime, uid) = runtime_directory()?;
++        let directory = runtime.join("t1-workstream");
++        match fs::DirBuilder::new().mode(0o700).create(&directory) {
++            Ok(()) => {}
++            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
++            Err(error) => return Err(error),
++        }
++        validate_directory(&directory, uid)?;
++        Ok(Self { directory, uid })
++    }
++
++    /// Selects a new operation, replacing the currently displayed operation.
++    /// Repeating the selected generation is idempotent, including after expiry.
++    ///
++    /// # Errors
++    /// Returns an error if the bounded write cannot safely complete.
++    pub fn begin(&self, generation: u64, label: &str) -> io::Result<()> {
++        let _lock = self.lock()?;
++        if read_record(&self.directory, self.uid)
++            .is_ok_and(|record| record.event.generation == generation)
++        {
++            return Ok(());
++        }
++        self.write(&Record {
++            event: WorkstreamEvent {
++                generation,
++                phase: WorkstreamPhase::Running,
++                label: sanitize_label(label),
++            },
++            updated_ms: uptime_ms()?,
++        })
++    }
++
++    /// Updates only the selected running operation. `None` preserves its label.
++    /// All three non-running phases are terminal, so delayed events cannot revive
++    /// a finished operation. An expired running record can still finish honestly.
++    ///
++    /// # Errors
++    /// Returns an error if the private record cannot safely be read or written.
++    pub fn update(
++        &self,
++        generation: u64,
++        phase: WorkstreamPhase,
++        label: Option<&str>,
++    ) -> io::Result<bool> {
++        let _lock = self.lock()?;
++        let mut record = read_record(&self.directory, self.uid)?;
++        if record.event.generation != generation || record.event.phase != WorkstreamPhase::Running {
++            return Ok(false);
++        }
++        record.event.phase = phase;
++        if let Some(label) = label {
++            record.event.label = sanitize_label(label);
++        }
++        record.updated_ms = uptime_ms()?;
++        self.write(&record)?;
++        Ok(true)
++    }
++
++    fn lock(&self) -> io::Result<UnixDatagram> {
++        // Rust 1.88 has no safe std flock. This non-receiving abstract socket is
++        // solely a short-lived kernel mutex: no filesystem socket, listening
++        // service, packets, root privileges, or stale lock after process death.
++        let address = SocketAddr::from_abstract_name(format!("t1-workstream-lock-{}", self.uid))?;
++        for _ in 0..10 {
++            match UnixDatagram::bind_addr(&address) {
++                Ok(lock) => return Ok(lock),
++                Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
++                    thread::sleep(Duration::from_millis(5));
++                }
++                Err(error) => return Err(error),
++            }
++        }
++        Err(io::Error::new(
++            io::ErrorKind::WouldBlock,
++            "activity channel busy",
++        ))
++    }
++
++    fn write(&self, record: &Record) -> io::Result<()> {
++        validate_directory(&self.directory, self.uid)?;
++        let pending = self.directory.join("pending");
++        // A crashed transaction can leave this fixed, bounded temporary name.
++        // Unlinking removes a symlink itself and never follows its target.
++        match fs::remove_file(&pending) {
++            Ok(()) => {}
++            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
++            Err(error) => return Err(error),
++        }
++        let result = (|| {
++            let mut file = OpenOptions::new()
++                .write(true)
++                .create_new(true)
++                .mode(0o600)
++                .open(&pending)?;
++            file.write_all(&record.bytes())?;
++            fs::rename(&pending, self.directory.join("state"))
++        })();
++        if result.is_err() {
++            let _ = fs::remove_file(pending);
++        }
++        result
++    }
++}
++
++/// Stable within this build, with raw operation IDs never stored or displayed.
++#[must_use]
++pub fn generation_for_id(id: &str) -> u64 {
++    let mut hasher = DefaultHasher::new();
++    id.hash(&mut hasher);
++    hasher.finish()
++}
++
++/// A fresh opaque wrapper generation, independent of command arguments.
++///
++/// # Errors
++/// Returns an error if the kernel random source cannot be read.
++pub fn random_generation() -> io::Result<u64> {
++    let mut bytes = [0; 8];
++    File::open("/dev/urandom")?.read_exact(&mut bytes)?;
++    Ok(u64::from_ne_bytes(bytes))
++}
++
++fn sanitize_label(label: &str) -> String {
++    let mut result = String::with_capacity(MAX_LABEL_BYTES);
++    for character in label.chars() {
++        let character = if character.is_ascii_alphanumeric() {
++            character.to_ascii_uppercase()
++        } else if character == '-' || character == '.' {
++            character
++        } else {
++            ' '
++        };
++        if character == ' ' && (result.is_empty() || result.ends_with(' ')) {
++            continue;
++        }
++        result.push(character);
++        if result.len() == MAX_LABEL_BYTES {
++            break;
++        }
++    }
++    let label = result.trim_end();
++    if label.is_empty() {
++        "WORKING".to_owned()
++    } else {
++        label.to_owned()
++    }
++}
++
++fn runtime_directory() -> io::Result<(PathBuf, u32)> {
++    let uid = fs::metadata("/proc/self")?.uid();
++    let runtime = env::var_os("XDG_RUNTIME_DIR")
++        .map(PathBuf::from)
++        .ok_or_else(unsafe_storage)?;
++    if !runtime.is_absolute() {
++        return Err(unsafe_storage());
++    }
++    validate_directory(&runtime, uid)?;
++    Ok((runtime, uid))
++}
++
++fn validate_directory(path: &Path, uid: u32) -> io::Result<()> {
++    let metadata = fs::symlink_metadata(path)?;
++    if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o777 != 0o700 {
++        return Err(unsafe_storage());
++    }
++    Ok(())
++}
++
++fn unsafe_storage() -> io::Error {
++    io::Error::new(
++        io::ErrorKind::PermissionDenied,
++        "activity storage is not private",
++    )
++}
++
++fn read_record(directory: &Path, uid: u32) -> io::Result<Record> {
++    validate_directory(directory, uid)?;
++    // Pin before opening for data, so even a replacement device/FIFO cannot
++    // cause side effects or block the renderer. Match the existing overlay reader.
++    let pinned = OpenOptions::new()
++        .read(true)
++        .custom_flags(O_PATH | O_NOFOLLOW)
++        .open(directory.join("state"))?;
++    let metadata = pinned.metadata()?;
++    if !metadata.is_file()
++        || metadata.uid() != uid
++        || metadata.mode() & 0o777 != 0o600
++        || metadata.len() > MAX_RECORD_BYTES
++        || metadata.nlink() != 1
++    {
++        return Err(unsafe_storage());
++    }
++    let file = OpenOptions::new()
++        .read(true)
++        .custom_flags(O_NONBLOCK)
++        .open(Path::new("/proc/self/fd").join(pinned.as_raw_fd().to_string()))?;
++    let opened = file.metadata()?;
++    if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
++        return Err(unsafe_storage());
++    }
++    let mut bytes = Vec::new();
++    file.take(MAX_RECORD_BYTES + 1).read_to_end(&mut bytes)?;
++    Record::parse(&bytes)
++        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid activity record"))
++}
++
++fn uptime_ms() -> io::Result<u64> {
++    let mut text = String::new();
++    File::open("/proc/uptime")?
++        .take(128)
++        .read_to_string(&mut text)?;
++    parse_uptime_ms(&text)
++        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "uptime unavailable"))
++}
++
++fn parse_uptime_ms(text: &str) -> Option<u64> {
++    let (seconds, fraction) = text.split_whitespace().next()?.split_once('.')?;
++    if fraction.is_empty() || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
++        return None;
++    }
++    let milliseconds = format!("{fraction:0<3}");
++    seconds
++        .parse::<u64>()
++        .ok()?
++        .checked_mul(1_000)?
++        .checked_add(milliseconds.get(..3)?.parse::<u64>().ok()?)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::os::unix::fs::{PermissionsExt, symlink};
++
++    struct Fixture {
++        writer: WorkstreamWriter,
++    }
++
++    impl Fixture {
++        fn new() -> Self {
++            let directory = env::temp_dir().join(format!(
++                "t1-workstream-test-{:016x}",
++                random_generation().unwrap()
++            ));
++            fs::DirBuilder::new()
++                .mode(0o700)
++                .create(&directory)
++                .unwrap();
++            Self {
++                writer: WorkstreamWriter {
++                    directory,
++                    uid: fs::metadata("/proc/self").unwrap().uid(),
++                },
++            }
++        }
++
++        fn reader(&self) -> WorkstreamReader {
++            WorkstreamReader {
++                directory: self.writer.directory.clone(),
++                uid: self.writer.uid,
++            }
++        }
++    }
++
++    impl Drop for Fixture {
++        fn drop(&mut self) {
++            let _ = fs::remove_dir_all(&self.writer.directory);
++        }
++    }
++
++    #[test]
++    fn expiry_and_future_timestamps_are_quiet() {
++        for phase in [
++            WorkstreamPhase::Running,
++            WorkstreamPhase::Done,
++            WorkstreamPhase::Failed,
++            WorkstreamPhase::Attention,
++        ] {
++            let record = Record {
++                event: WorkstreamEvent {
++                    generation: 1,
++                    phase,
++                    label: "BUILDING".into(),
++                },
++                updated_ms: 20_000,
++            };
++            assert!(record.fresh_at(20_000));
++            assert!(record.fresh_at(20_000 + phase.lifetime_ms() - 1));
++            assert!(!record.fresh_at(20_000 + phase.lifetime_ms()));
++            assert!(!record.fresh_at(19_999));
++        }
++    }
++
++    #[test]
++    fn bounded_labels_cannot_inject_record_fields() {
++        assert_eq!(
++            sanitize_label("  building\n\u{1b}[31m widget 🦀  "),
++            "BUILDING 31M WIDGET"
++        );
++        assert_eq!(sanitize_label("💡"), "WORKING");
++        assert_eq!(sanitize_label(&"x".repeat(1_000)).len(), MAX_LABEL_BYTES);
++        assert!(
++            Record::parse(b"t1-workstream-v1\n0000000000000001\n12\nrunning\nBUILDING\n").is_some()
++        );
++        assert!(
++            Record::parse(b"t1-workstream-v1\n0000000000000001\n12\nrunning\nBUILDING\nEXTRA\n")
++                .is_none()
++        );
++        assert!(Record::parse(b"t1-workstream-v1\n0000000000000001\n12\nrunning\nBad\n").is_none());
++        assert!(Record::parse(&vec![b'a'; 257]).is_none());
++    }
++
++    #[test]
++    fn older_completion_does_not_overwrite_selected_work() {
++        let fixture = Fixture::new();
++        fixture.writer.begin(1, "building").unwrap();
++        fixture.writer.begin(2, "checking").unwrap();
++        assert!(
++            !fixture
++                .writer
++                .update(1, WorkstreamPhase::Done, None)
++                .unwrap()
++        );
++        let event = fixture.reader().poll().unwrap();
++        assert_eq!(event.generation, 2);
++        assert_eq!(event.label, "CHECKING");
++        assert_eq!(event.phase, WorkstreamPhase::Running);
++        assert!(
++            fixture
++                .writer
++                .update(2, WorkstreamPhase::Done, None)
++                .unwrap()
++        );
++        assert_eq!(
++            fixture.reader().poll().unwrap().phase,
++            WorkstreamPhase::Done
++        );
++    }
++
++    #[test]
++    fn late_start_or_update_cannot_revive_terminal_operation() {
++        let fixture = Fixture::new();
++        fixture.writer.begin(3, "working").unwrap();
++        fixture
++            .writer
++            .update(3, WorkstreamPhase::Attention, Some("response ready"))
++            .unwrap();
++        fixture.writer.begin(3, "working").unwrap();
++        assert!(
++            !fixture
++                .writer
++                .update(3, WorkstreamPhase::Running, Some("checking"))
++                .unwrap()
++        );
++        let event = fixture.reader().poll().unwrap();
++        assert_eq!(event.phase, WorkstreamPhase::Attention);
++        assert_eq!(event.label, "RESPONSE READY");
++    }
++
++    #[test]
++    fn expired_running_operation_can_report_observed_completion() {
++        let fixture = Fixture::new();
++        fixture
++            .writer
++            .write(&Record {
++                event: WorkstreamEvent {
++                    generation: 4,
++                    phase: WorkstreamPhase::Running,
++                    label: "WORKING".into(),
++                },
++                updated_ms: 0,
++            })
++            .unwrap();
++        assert!(fixture.reader().poll().is_none());
++        assert!(
++            fixture
++                .writer
++                .update(4, WorkstreamPhase::Attention, Some("response ready"))
++                .unwrap()
++        );
++        assert_eq!(
++            fixture.reader().poll().unwrap().phase,
++            WorkstreamPhase::Attention
++        );
++    }
++
++    #[test]
++    fn unsafe_and_stale_files_are_quiet() {
++        let fixture = Fixture::new();
++        let path = fixture.writer.directory.join("state");
++        assert!(fixture.reader().poll().is_none());
++        symlink("/dev/zero", &path).unwrap();
++        assert!(fixture.reader().poll().is_none());
++        fs::remove_file(&path).unwrap();
++        fixture.writer.begin(1, "building").unwrap();
++        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
++        assert!(fixture.reader().poll().is_none());
++        fixture
++            .writer
++            .write(&Record {
++                event: WorkstreamEvent {
++                    generation: 1,
++                    phase: WorkstreamPhase::Running,
++                    label: "BUILDING".into(),
++                },
++                updated_ms: 0,
++            })
++            .unwrap();
++        assert!(fixture.reader().poll().is_none());
++        fs::set_permissions(&fixture.writer.directory, fs::Permissions::from_mode(0o755)).unwrap();
++        assert!(fixture.reader().poll().is_none());
++    }
++
++    #[test]
++    fn uptime_is_integer_based_and_rejects_bad_input() {
++        assert_eq!(parse_uptime_ms("123.45 678.90\n"), Some(123_450));
++        assert_eq!(parse_uptime_ms("1.2 0\n"), Some(1_200));
++        assert_eq!(parse_uptime_ms("1.2345 0\n"), Some(1_234));
++        assert_eq!(parse_uptime_ms("-1.23"), None);
++        assert_eq!(parse_uptime_ms("1.nan"), None);
++        assert_eq!(parse_uptime_ms("18446744073709551615.00"), None);
++    }
++}
+diff --git a/crates/t1-touchbar/src/workstream_visual.rs b/crates/t1-touchbar/src/workstream_visual.rs
+new file mode 100644
+index 0000000..48e5df7
+--- /dev/null
++++ b/crates/t1-touchbar/src/workstream_visual.rs
+@@ -0,0 +1,547 @@
++//! Tokyo Night activity and touch feedback. Motion never owns input or actions.
++
++use std::time::Duration;
++
++use crate::framebuffer::{FramebufferError, Rectangle, Rgb, Xrgb8888Frame};
++use crate::workstream::{WorkstreamEvent, WorkstreamPhase};
++
++const FRAME_INTERVAL: Duration = Duration::from_millis(34);
++const PRESS_DURATION: Duration = Duration::from_millis(240);
++const FINISH_DURATION: Duration = Duration::from_millis(700);
++const BLUE: Rgb = Rgb {
++    red: 122,
++    green: 162,
++    blue: 247,
++};
++const PURPLE: Rgb = Rgb {
++    red: 187,
++    green: 154,
++    blue: 247,
++};
++const GREEN: Rgb = Rgb {
++    red: 158,
++    green: 206,
++    blue: 106,
++};
++const RED: Rgb = Rgb {
++    red: 247,
++    green: 118,
++    blue: 142,
++};
++const YELLOW: Rgb = Rgb {
++    red: 224,
++    green: 175,
++    blue: 104,
++};
++const INK: Rgb = Rgb {
++    red: 192,
++    green: 202,
++    blue: 245,
++};
++const MUTED: Rgb = Rgb {
++    red: 90,
++    green: 100,
++    blue: 141,
++};
++
++pub(crate) struct WorkstreamVisual {
++    event: Option<WorkstreamEvent>,
++    display_label: String,
++    event_since: Duration,
++    press: Option<(Rectangle, Duration)>,
++    last_frame: Duration,
++    was_animating: bool,
++    reduced_motion: bool,
++}
++
++impl WorkstreamVisual {
++    pub(crate) fn new(reduced_motion: bool) -> Self {
++        Self {
++            event: None,
++            display_label: "WORKSTREAM".into(),
++            event_since: Duration::ZERO,
++            press: None,
++            last_frame: Duration::ZERO,
++            was_animating: false,
++            reduced_motion,
++        }
++    }
++
++    pub(crate) fn set_event(&mut self, event: Option<WorkstreamEvent>, now: Duration) -> bool {
++        if self.event == event {
++            return false;
++        }
++        self.display_label = event.as_ref().map_or_else(
++            || "WORKSTREAM".into(),
++            |event| match event.phase {
++                WorkstreamPhase::Done => format!("DONE - {}", event.label),
++                WorkstreamPhase::Failed => format!("FAILED - {}", event.label),
++                WorkstreamPhase::Running | WorkstreamPhase::Attention => event.label.clone(),
++            },
++        );
++        self.event = event;
++        self.event_since = now;
++        true
++    }
++
++    pub(crate) fn press(&mut self, bounds: Rectangle, now: Duration) {
++        if !self.reduced_motion {
++            self.press = Some((bounds, now));
++        }
++    }
++
++    pub(crate) fn cancel_touch(&mut self) {
++        self.press = None;
++    }
++
++    /// Coalesces elapsed frames; returns one final redraw when a transient ends.
++    pub(crate) fn advance(
++        &mut self,
++        now: Duration,
++        ribbon_visible: bool,
++        controls_visible: bool,
++    ) -> bool {
++        if !controls_visible {
++            self.press = None;
++        }
++        if self
++            .press
++            .is_some_and(|(_, start)| now.saturating_sub(start) >= PRESS_DURATION)
++        {
++            self.press = None;
++        }
++        let animating = !self.reduced_motion
++            && (self.press.is_some()
++                || (ribbon_visible
++                    && self.event.as_ref().is_some_and(|event| {
++                        event.phase == WorkstreamPhase::Running
++                            || (event.phase == WorkstreamPhase::Done
++                                && now.saturating_sub(self.event_since) < FINISH_DURATION)
++                    })));
++        let ended = self.was_animating && !animating;
++        self.was_animating = animating;
++        if ended || (animating && now.saturating_sub(self.last_frame) >= FRAME_INTERVAL) {
++            self.last_frame = now;
++            controls_visible
++        } else {
++            false
++        }
++    }
++
++    pub(crate) fn render(
++        &self,
++        frame: &mut Xrgb8888Frame<'_>,
++        bounds: Rectangle,
++        now: Duration,
++    ) -> Result<(), FramebufferError> {
++        if bounds.width < 24 || bounds.height < 16 {
++            return Ok(());
++        }
++        let color = match self.event.as_ref() {
++            None => MUTED,
++            Some(event) => match event.phase {
++                WorkstreamPhase::Running => BLUE,
++                WorkstreamPhase::Done => GREEN,
++                WorkstreamPhase::Failed => RED,
++                WorkstreamPhase::Attention => YELLOW,
++            },
++        };
++        let label_color = if self.event.is_some() { INK } else { MUTED };
++        draw_text(frame, bounds, &self.display_label, label_color)?;
++        let running = self
++            .event
++            .as_ref()
++            .is_some_and(|event| event.phase == WorkstreamPhase::Running)
++            && !self.reduced_motion;
++        let seconds = if running {
++            now.saturating_sub(self.event_since).as_secs_f64()
++        } else {
++            0.0
++        };
++        let bottom = bounds.y + bounds.height * 4 / 5;
++        let width = bounds.width.saturating_sub(16);
++        for x in 0..width {
++            let fraction = f64::from(x) / f64::from(width);
++            let envelope = (fraction * std::f64::consts::PI).sin();
++            for (layer, ink) in [color, PURPLE].into_iter().enumerate() {
++                let amplitude = if running {
++                    f64::from(bounds.height) * 0.12
++                } else {
++                    0.0
++                };
++                let y = f64::from(bottom)
++                    + (fraction
++                        * std::f64::consts::TAU
++                        * (2.0 + f64::from(u8::try_from(layer).unwrap_or(0)))
++                        - seconds * 2.8)
++                        .sin()
++                        * amplitude
++                        * envelope;
++                let ink = if layer == 0 || !running { color } else { ink };
++                draw_vertical_sample(
++                    frame,
++                    bounds,
++                    bounds.x + 8 + x,
++                    y,
++                    ink,
++                    if layer == 0 { 240 } else { 170 },
++                )?;
++                if running {
++                    draw_vertical_sample(frame, bounds, bounds.x + 8 + x, y + 1.0, ink, 150)?;
++                }
++            }
++        }
++        if running {
++            self.render_running_signal(frame, bounds, seconds)?;
++            let fraction = (seconds / 2.8).fract();
++            let y = f64::from(bottom)
++                + (fraction * std::f64::consts::TAU * 2.0 - seconds * 2.8).sin()
++                    * f64::from(bounds.height)
++                    * 0.12
++                    * (fraction * std::f64::consts::PI).sin();
++            draw_glow(
++                frame,
++                bounds,
++                f64::from(bounds.x + 8) + fraction * f64::from(width.saturating_sub(1)),
++                y,
++                INK,
++                255,
++                4,
++            )?;
++        }
++        self.render_completion(frame, bounds, now)
++    }
++
++    fn render_completion(
++        &self,
++        frame: &mut Xrgb8888Frame<'_>,
++        bounds: Rectangle,
++        now: Duration,
++    ) -> Result<(), FramebufferError> {
++        let width = bounds.width.saturating_sub(16);
++        let bottom = bounds.y + bounds.height * 4 / 5;
++        if let Some(event) = &self.event {
++            let elapsed = now.saturating_sub(self.event_since);
++            if event.phase == WorkstreamPhase::Done
++                && !self.reduced_motion
++                && elapsed < FINISH_DURATION
++            {
++                let x = bounds.x
++                    + 8
++                    + u32::try_from(
++                        u128::from(width.saturating_sub(1)) * elapsed.as_nanos()
++                            / FINISH_DURATION.as_nanos(),
++                    )
++                    .unwrap_or(0);
++                for dx in 0..5 {
++                    if x + dx < bounds.x + bounds.width {
++                        frame.blend_rectangle(
++                            Rectangle {
++                                x: x + dx,
++                                y: bottom.saturating_sub(1),
++                                width: 1,
++                                height: 3,
++                            },
++                            GREEN,
++                            210_u8.saturating_sub(u8::try_from(dx * 35).unwrap_or(210)),
++                        )?;
++                    }
++                }
++            }
++        }
++        Ok(())
++    }
++
++    fn render_running_signal(
++        &self,
++        frame: &mut Xrgb8888Frame<'_>,
++        bounds: Rectangle,
++        seconds: f64,
++    ) -> Result<(), FramebufferError> {
++        let scale = (bounds.height / 20).clamp(1, 3);
++        let text_width = u32::try_from(self.display_label.len()).unwrap_or(0) * 6 * scale;
++        let left = bounds.x + bounds.width.saturating_sub(text_width) / 2;
++        if left < bounds.x + 30 || bounds.height < 30 {
++            return Ok(());
++        }
++        let center_x = f64::from(left - 20);
++        let center_y = f64::from(bounds.y + bounds.height / 5) + f64::from(7 * scale) / 2.0;
++        for dot in 0..12 {
++            let angle = f64::from(dot) * std::f64::consts::TAU / 12.0;
++            let light = f64::midpoint((angle - seconds * std::f64::consts::TAU).cos(), 1.0);
++            let alpha = u8::try_from(pixel_from_float(30.0 + 225.0 * light.powi(3))).unwrap_or(255);
++            draw_glow(
++                frame,
++                bounds,
++                center_x + angle.cos() * 9.0,
++                center_y + angle.sin() * 9.0,
++                BLUE,
++                alpha,
++                2,
++            )?;
++        }
++        Ok(())
++    }
++
++    pub(crate) fn render_touch(
++        &self,
++        frame: &mut Xrgb8888Frame<'_>,
++        now: Duration,
++    ) -> Result<(), FramebufferError> {
++        let Some((bounds, start)) = self.press else {
++            return Ok(());
++        };
++        let elapsed = now.saturating_sub(start);
++        if elapsed >= PRESS_DURATION || bounds.width < 4 || bounds.height < 4 {
++            return Ok(());
++        }
++        let progress = elapsed.as_secs_f64() / PRESS_DURATION.as_secs_f64();
++        let extent = pixel_from_float(f64::from(bounds.width - 4) * (0.2 + 0.8 * progress)).max(1);
++        let alpha = u8::try_from(pixel_from_float(180.0 * (1.0 - progress))).unwrap_or(0);
++        frame.blend_rectangle(
++            Rectangle {
++                x: bounds.x + (bounds.width - extent) / 2,
++                y: bounds.y + bounds.height - 4,
++                width: extent,
++                height: 2,
++            },
++            BLUE,
++            alpha,
++        )
++    }
++}
++
++#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
++fn pixel_from_float(value: f64) -> u32 {
++    value.max(0.0) as u32
++}
++
++fn draw_glow(
++    frame: &mut Xrgb8888Frame<'_>,
++    clip: Rectangle,
++    x: f64,
++    y: f64,
++    color: Rgb,
++    alpha: u8,
++    radius: i32,
++) -> Result<(), FramebufferError> {
++    for dy in -radius..=radius {
++        for dx in -radius..=radius {
++            let px = x + f64::from(dx);
++            let py = y + f64::from(dy);
++            if px < f64::from(clip.x)
++                || px >= f64::from(clip.x + clip.width)
++                || py < f64::from(clip.y)
++                || py >= f64::from(clip.y + clip.height)
++            {
++                continue;
++            }
++            let distance = f64::from(dx * dx + dy * dy) / f64::from(radius * radius);
++            let weight = (1.0 - distance).max(0.0);
++            frame.blend_rectangle(
++                Rectangle {
++                    x: pixel_from_float(px),
++                    y: pixel_from_float(py),
++                    width: 1,
++                    height: 1,
++                },
++                color,
++                u8::try_from(pixel_from_float(f64::from(alpha) * weight)).unwrap_or(0),
++            )?;
++        }
++    }
++    Ok(())
++}
++
++fn draw_vertical_sample(
++    frame: &mut Xrgb8888Frame<'_>,
++    clip: Rectangle,
++    x: u32,
++    y: f64,
++    color: Rgb,
++    alpha: u8,
++) -> Result<(), FramebufferError> {
++    let top = pixel_from_float(y);
++    let fraction = y.fract().abs();
++    for (offset, weight) in [(0, 1.0 - fraction), (1, fraction)] {
++        if top + offset >= clip.y && top + offset < clip.y + clip.height {
++            frame.blend_rectangle(
++                Rectangle {
++                    x,
++                    y: top + offset,
++                    width: 1,
++                    height: 1,
++                },
++                color,
++                u8::try_from(pixel_from_float(f64::from(alpha) * weight)).unwrap_or(0),
++            )?;
++        }
++    }
++    Ok(())
++}
++
++/// Small original bitmap alphabet; no fonts, assets or allocations in a frame.
++fn draw_text(
++    frame: &mut Xrgb8888Frame<'_>,
++    bounds: Rectangle,
++    label: &str,
++    color: Rgb,
++) -> Result<(), FramebufferError> {
++    let scale = (bounds.height / 20).clamp(1, 3);
++    let limit = usize::try_from(bounds.width.saturating_sub(20) / (6 * scale)).unwrap_or(0);
++    let count = label.len().min(limit);
++    let text_width = u32::try_from(count).unwrap_or(0) * 6 * scale;
++    let left = bounds.x + (bounds.width.saturating_sub(text_width)) / 2;
++    let top = bounds.y + bounds.height / 5;
++    for (index, character) in label.bytes().take(count).enumerate() {
++        let columns = glyph(character);
++        for (column, bits) in columns.into_iter().enumerate() {
++            for row in 0..7 {
++                if bits & (1 << row) != 0 {
++                    let x = left
++                        + (u32::try_from(index).unwrap_or(0) * 6
++                            + u32::try_from(column).unwrap_or(0))
++                            * scale;
++                    let y = top + row * scale;
++                    if x + scale <= bounds.x + bounds.width && y + scale <= bounds.y + bounds.height
++                    {
++                        frame.fill_rectangle(
++                            Rectangle {
++                                x,
++                                y,
++                                width: scale,
++                                height: scale,
++                            },
++                            color,
++                        )?;
++                    }
++                }
++            }
++        }
++    }
++    Ok(())
++}
++
++const fn glyph(character: u8) -> [u8; 5] {
++    match character.to_ascii_uppercase() {
++        b'A' => [126, 9, 9, 9, 126],
++        b'B' => [127, 73, 73, 73, 54],
++        b'C' => [62, 65, 65, 65, 34],
++        b'D' => [127, 65, 65, 34, 28],
++        b'E' => [127, 73, 73, 73, 65],
++        b'F' => [127, 9, 9, 9, 1],
++        b'G' => [62, 65, 73, 73, 122],
++        b'H' => [127, 8, 8, 8, 127],
++        b'I' => [0, 65, 127, 65, 0],
++        b'J' => [32, 64, 65, 63, 1],
++        b'K' => [127, 8, 20, 34, 65],
++        b'L' => [127, 64, 64, 64, 64],
++        b'M' => [127, 2, 12, 2, 127],
++        b'N' => [127, 4, 8, 16, 127],
++        b'O' => [62, 65, 65, 65, 62],
++        b'P' => [127, 9, 9, 9, 6],
++        b'Q' => [62, 65, 81, 33, 94],
++        b'R' => [127, 9, 25, 41, 70],
++        b'S' => [38, 73, 73, 73, 50],
++        b'T' => [1, 1, 127, 1, 1],
++        b'U' => [63, 64, 64, 64, 63],
++        b'V' => [31, 32, 64, 32, 31],
++        b'W' => [63, 64, 56, 64, 63],
++        b'X' => [99, 20, 8, 20, 99],
++        b'Y' => [7, 8, 112, 8, 7],
++        b'Z' => [97, 81, 73, 69, 67],
++        b'0' => [62, 81, 73, 69, 62],
++        b'1' => [0, 66, 127, 64, 0],
++        b'2' => [98, 81, 73, 73, 70],
++        b'3' => [34, 65, 73, 73, 54],
++        b'4' => [24, 20, 18, 127, 16],
++        b'5' => [39, 69, 69, 69, 57],
++        b'6' => [60, 74, 73, 73, 48],
++        b'7' => [1, 113, 9, 5, 3],
++        b'8' => [54, 73, 73, 73, 54],
++        b'9' => [6, 73, 73, 41, 30],
++        b'-' => [8; 5],
++        b'.' => [0, 96, 96, 0, 0],
++        b'!' => [0, 0, 95, 0, 0],
++        _ => [0; 5],
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn event(phase: WorkstreamPhase) -> WorkstreamEvent {
++        WorkstreamEvent {
++            generation: 1,
++            phase,
++            label: "CHECKING".into(),
++        }
++    }
++    #[test]
++    fn idle_is_static_and_active_frames_are_capped_and_coalesced() {
++        let mut visual = WorkstreamVisual::new(false);
++        assert!(!visual.advance(Duration::from_secs(10), true, true));
++        visual.set_event(Some(event(WorkstreamPhase::Running)), Duration::ZERO);
++        assert!(visual.advance(Duration::from_millis(34), true, true));
++        assert!(!visual.advance(Duration::from_millis(35), true, true));
++        assert!(visual.advance(Duration::from_secs(10), true, true));
++        assert!(!visual.advance(Duration::from_secs(10), true, true));
++        visual.set_event(None, Duration::from_secs(10));
++        assert!(visual.advance(Duration::from_secs(11), true, true));
++        assert!(!visual.advance(Duration::from_secs(12), true, true));
++    }
++    #[test]
++    fn completion_and_touch_settle_and_blanking_cancels_touch() {
++        let mut visual = WorkstreamVisual::new(false);
++        visual.set_event(Some(event(WorkstreamPhase::Done)), Duration::ZERO);
++        assert!(visual.advance(Duration::from_millis(34), true, true));
++        assert!(visual.advance(Duration::from_millis(700), true, true));
++        assert!(!visual.advance(Duration::from_secs(1), true, true));
++        visual.press(
++            Rectangle {
++                x: 0,
++                y: 0,
++                width: 30,
++                height: 60,
++            },
++            Duration::from_secs(1),
++        );
++        assert!(visual.advance(Duration::from_millis(1100), true, true));
++        assert!(!visual.advance(Duration::from_millis(1101), false, false));
++        assert!(visual.press.is_none());
++        assert!(!visual.advance(Duration::from_secs(2), true, true));
++    }
++    #[test]
++    fn reduced_motion_and_hidden_ribbon_do_not_animate() {
++        let mut visual = WorkstreamVisual::new(true);
++        visual.set_event(Some(event(WorkstreamPhase::Running)), Duration::ZERO);
++        assert!(!visual.advance(Duration::from_secs(1), true, true));
++        let mut visual = WorkstreamVisual::new(false);
++        visual.set_event(Some(event(WorkstreamPhase::Running)), Duration::ZERO);
++        assert!(!visual.advance(Duration::from_secs(1), false, true));
++    }
++    #[test]
++    fn motion_stays_inside_its_reserved_region() {
++        let mut pixels = vec![0; 400 * 60 * 4];
++        let mut frame = Xrgb8888Frame::new(400, 60, 1600, &mut pixels).unwrap();
++        let mut visual = WorkstreamVisual::new(false);
++        visual.set_event(Some(event(WorkstreamPhase::Running)), Duration::ZERO);
++        visual
++            .render(
++                &mut frame,
++                Rectangle {
++                    x: 100,
++                    y: 0,
++                    width: 200,
++                    height: 60,
++                },
++                Duration::from_millis(200),
++            )
++            .unwrap();
++        assert!(frame.as_bytes().iter().any(|byte| *byte != 0));
++        for row in frame.as_bytes().as_chunks::<1600>().0 {
++            assert!(row[..400].iter().all(|byte| *byte == 0));
++            assert!(row[1200..].iter().all(|byte| *byte == 0));
++        }
++    }
++}
+diff --git a/crates/t1-touchbar/tests/workstream_claude.rs b/crates/t1-touchbar/tests/workstream_claude.rs
+new file mode 100644
+index 0000000..3316ab7
+--- /dev/null
++++ b/crates/t1-touchbar/tests/workstream_claude.rs
+@@ -0,0 +1,113 @@
++//! Exercise hook delivery through the real sender in isolated runtime storage.
++
++use std::env;
++use std::fs;
++use std::io::Write;
++use std::os::unix::fs::DirBuilderExt;
++use std::path::PathBuf;
++use std::process::{Command, Output, Stdio};
++
++use serde_json::{Value, json};
++use t1_touchbar::workstream::random_generation;
++
++struct Runtime(PathBuf);
++
++impl Runtime {
++    fn new() -> Self {
++        let path = env::temp_dir().join(format!(
++            "t1-workstream-claude-test-{:016x}",
++            random_generation().unwrap()
++        ));
++        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
++        Self(path)
++    }
++
++    fn send(&self, event: &Value) {
++        let output = self.send_bytes(&serde_json::to_vec(event).unwrap());
++        assert!(output.status.success());
++        assert!(output.stdout.is_empty());
++        assert!(output.stderr.is_empty());
++    }
++
++    fn send_bytes(&self, input: &[u8]) -> Output {
++        let mut child = Command::new(env!("CARGO_BIN_EXE_t1-workstream-claude"))
++            .env("XDG_RUNTIME_DIR", &self.0)
++            .stdin(Stdio::piped())
++            .stdout(Stdio::piped())
++            .stderr(Stdio::piped())
++            .spawn()
++            .unwrap();
++        child.stdin.take().unwrap().write_all(input).unwrap();
++        child.wait_with_output().unwrap()
++    }
++
++    fn state(&self) -> String {
++        fs::read_to_string(self.0.join("t1-workstream/state")).unwrap()
++    }
++}
++
++impl Drop for Runtime {
++    fn drop(&mut self) {
++        let _ = fs::remove_dir_all(&self.0);
++    }
++}
++
++fn event(name: &str, session: &str, prompt: &str) -> Value {
++    json!({
++        "hook_event_name": name,
++        "session_id": session,
++        "prompt_id": prompt,
++        "prompt": "SYNTHETIC PRIVATE PROMPT",
++        "last_assistant_message": "SYNTHETIC PRIVATE OUTPUT",
++        "transcript_path": "/synthetic/never-open-this-transcript",
++    })
++}
++
++#[test]
++fn repeated_prompts_restart_and_stale_stops_cannot_finish_new_work() {
++    let runtime = Runtime::new();
++    runtime.send(&event("UserPromptSubmit", "session-a", "prompt-1"));
++    runtime.send(&event("Stop", "session-a", "prompt-1"));
++    assert!(runtime.state().contains("\nattention\nRESPONSE READY\n"));
++    runtime.send(&event("UserPromptSubmit", "session-a", "prompt-2"));
++    let current = runtime.state();
++    assert!(current.contains("\nrunning\nCLAUDE WORKING\n"));
++    runtime.send(&event("Stop", "session-a", "prompt-1"));
++    runtime.send(&event("Stop", "session-b", "prompt-2"));
++    assert_eq!(runtime.state(), current);
++    runtime.send(&event("StopFailure", "session-a", "prompt-2"));
++    let failed = runtime.state();
++    assert!(failed.contains("\nfailed\nCLAUDE ERROR\n"));
++    runtime.send(&event("UserPromptSubmit", "session-a", "prompt-2"));
++    assert_eq!(runtime.state(), failed);
++    assert!(!failed.contains("PRIVATE"));
++    assert!(!failed.contains("session-a"));
++    assert!(!failed.contains("prompt-2"));
++}
++
++#[test]
++fn subagents_and_missing_prompt_identifiers_do_not_modify_main_activity() {
++    let runtime = Runtime::new();
++    runtime.send(&event("UserPromptSubmit", "session-a", "prompt-1"));
++    let current = runtime.state();
++    let mut missing = event("Stop", "session-a", "prompt-1");
++    missing.as_object_mut().unwrap().remove("prompt_id");
++    runtime.send(&missing);
++    let mut subagent = event("Stop", "session-a", "prompt-1");
++    subagent["agent_id"] = json!("synthetic-child");
++    runtime.send(&subagent);
++    assert_eq!(runtime.state(), current);
++}
++
++#[test]
++fn malformed_input_and_unavailable_storage_cannot_fail_claude() {
++    let runtime = Runtime::new();
++    let output = runtime.send_bytes(b"invalid json");
++    assert!(output.status.success());
++    assert!(output.stdout.is_empty());
++    assert!(output.stderr.is_empty());
++    assert!(!runtime.0.join("t1-workstream").exists());
++    fs::remove_dir(&runtime.0).unwrap();
++    runtime.send(&event("UserPromptSubmit", "session-a", "prompt-1"));
++    assert!(!runtime.0.exists());
++}
+diff --git a/crates/t1-touchbar/tests/workstream_cli.rs b/crates/t1-touchbar/tests/workstream_cli.rs
+new file mode 100644
+index 0000000..c988b8a
+--- /dev/null
++++ b/crates/t1-touchbar/tests/workstream_cli.rs
+@@ -0,0 +1,120 @@
++//! The activity UI must not change the command's output or exit behavior.
++
++use std::env;
++use std::fs;
++use std::os::unix::fs::DirBuilderExt;
++use std::path::PathBuf;
++use std::process::Command;
++
++use t1_touchbar::workstream::random_generation;
++
++struct Runtime(PathBuf);
++
++impl Runtime {
++    fn new() -> Self {
++        let path = env::temp_dir().join(format!(
++            "t1-workstream-cli-test-{:016x}",
++            random_generation().unwrap()
++        ));
++        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
++        Self(path)
++    }
++
++    fn command(&self) -> Command {
++        let mut command = Command::new(env!("CARGO_BIN_EXE_t1-workstream"));
++        command.env("XDG_RUNTIME_DIR", &self.0);
++        command
++    }
++}
++
++impl Drop for Runtime {
++    fn drop(&mut self) {
++        let _ = fs::remove_dir_all(&self.0);
++    }
++}
++
++#[test]
++fn wrapper_preserves_output_and_failure_without_storing_arguments() {
++    let runtime = Runtime::new();
++    let output = runtime
++        .command()
++        .args([
++            "run",
++            "checking",
++            "--",
++            "/bin/sh",
++            "-c",
++            "printf synthetic-private-argument; printf synthetic-stderr >&2; exit 7",
++        ])
++        .output()
++        .unwrap();
++    assert_eq!(output.status.code(), Some(7));
++    assert_eq!(output.stdout, b"synthetic-private-argument");
++    assert_eq!(output.stderr, b"synthetic-stderr");
++    let state = fs::read_to_string(runtime.0.join("t1-workstream/state")).unwrap();
++    assert!(state.contains("\nfailed\nCHECKING\n"));
++    assert!(!state.contains("synthetic"));
++    assert!(!state.contains("/bin/sh"));
++}
++
++#[test]
++fn missing_runtime_storage_cannot_prevent_successful_command() {
++    let runtime = Runtime::new();
++    let output = runtime
++        .command()
++        .env("XDG_RUNTIME_DIR", runtime.0.join("missing"))
++        .args(["run", "checking", "--", "/bin/sh", "-c", "printf completed"])
++        .output()
++        .unwrap();
++    assert!(output.status.success());
++    assert_eq!(output.stdout, b"completed");
++    assert!(output.stderr.is_empty());
++}
++
++#[test]
++fn wrapper_preserves_signal_status_and_does_not_parse_shell_metacharacters() {
++    let runtime = Runtime::new();
++    let output = runtime
++        .command()
++        .args([
++            "run",
++            "checking",
++            "--",
++            "/bin/printf",
++            "%s",
++            "$(synthetic-command); literal",
++        ])
++        .output()
++        .unwrap();
++    assert!(output.status.success());
++    assert_eq!(output.stdout, b"$(synthetic-command); literal");
++    let output = runtime
++        .command()
++        .args(["run", "checking", "--", "/bin/sh", "-c", "kill -TERM $$"])
++        .output()
++        .unwrap();
++    assert_eq!(output.status.code(), Some(143));
++}
++
++#[test]
++fn terminal_hook_labels_cannot_be_replaced_by_a_late_start() {
++    let runtime = Runtime::new();
++    for arguments in [
++        ["begin", "synthetic-operation", "working"],
++        ["attention", "synthetic-operation", "response ready"],
++        ["begin", "synthetic-operation", "working"],
++        ["update", "synthetic-operation", "checking"],
++    ] {
++        assert!(
++            runtime
++                .command()
++                .args(arguments)
++                .status()
++                .unwrap()
++                .success()
++        );
++    }
++    let state = fs::read_to_string(runtime.0.join("t1-workstream/state")).unwrap();
++    assert!(state.contains("\nattention\nRESPONSE READY\n"));
++    assert!(!state.contains("synthetic-operation"));
++}
+diff --git a/docs/workstream-claude.md b/docs/workstream-claude.md
+new file mode 100644
+index 0000000..bf4b72f
+--- /dev/null
++++ b/docs/workstream-claude.md
+@@ -0,0 +1,111 @@
++# Optional Claude Code lifecycle signals
++
++`t1-workstream-claude` connects local Claude Code to the Workstream renderer.
++It requires Claude Code 2.1.196 or later: the official
++[common hook fields](https://code.claude.com/docs/en/hooks#common-input-fields)
++include `prompt_id` from that version. Events without a valid prompt identifier
++are ignored, avoiding an unsafe session-only fallback.
++
++| Hook | Touch Bar label | Meaning |
++| --- | --- | --- |
++| `UserPromptSubmit` | CLAUDE WORKING | A prompt was submitted. |
++| `Stop` | RESPONSE READY | Claude produced a response, not a guarantee that the work succeeded. |
++| `StopFailure` | FAILED - CLAUDE ERROR | Claude's turn ended with an API error. |
++
++Claude's [Stop hook](https://code.claude.com/docs/en/hooks#stop) does not fire
++on user interruption. There is no Interrupt mapping. The working signal expires
++after 10 seconds; terminal notices last 6 seconds. This is a brief activity
++signal, not continuous monitoring of model execution. A cancelled or long turn
++therefore becomes quiet. Explicit command wrappers can keep actual build or
++test activity refreshed throughout a command.
++
++## Build and install
++
++```sh
++cargo build --release --locked -p t1-touchbar --features workstream-claude \
++  --bin t1-workstream --bin t1-workstream-claude
++install -d "$HOME/.local/bin"
++install -m 755 target/release/t1-workstream target/release/t1-workstream-claude \
++  "$HOME/.local/bin/"
++```
++
++Keep the executables in the same directory. The adapter finds its sibling
++sender directly, without searching `PATH` or invoking a shell. The Workstream
++renderer must already be installed and running.
++
++## Configure and verify
++
++Merge the following entries into `~/.claude/settings.json`, preserving other
++settings and hooks. These are ordinary command hooks using the official
++[settings format](https://code.claude.com/docs/en/hooks#configuration).
++Building the adapter does not activate hooks or change Claude's settings.
++
++```json
++{
++  "hooks": {
++    "UserPromptSubmit": [{
++      "hooks": [{
++        "type": "command",
++        "command": "\"${HOME}/.local/bin/t1-workstream-claude\"",
++        "timeout": 1,
++        "async": false
++      }]
++    }],
++    "Stop": [{
++      "hooks": [{
++        "type": "command",
++        "command": "\"${HOME}/.local/bin/t1-workstream-claude\"",
++        "timeout": 1,
++        "async": false
++      }]
++    }],
++    "StopFailure": [{
++      "hooks": [{
++        "type": "command",
++        "command": "\"${HOME}/.local/bin/t1-workstream-claude\"",
++        "timeout": 1,
++        "async": false
++      }]
++    }]
++  }
++}
++```
++
++Keep delivery synchronous so hooks do not race after being put in the
++background. Review the configured hooks with Claude's `/hooks` interface and
++honor any normal trust prompts. Test a real prompt and response in local Claude
++Code before calling the integration live. A synthetic hook test proves the
++adapter works, but cannot establish that Claude invoked it. Remove only these
++entries to disable the integration; there is no need to disable unrelated hooks.
++
++## Failure, privacy, and concurrency
++
++The adapter accepts at most 64 KiB plus one overflow byte from standard input.
++It uses only the event name, session and prompt identifiers, and the presence of
++`agent_id` to ignore subagents. It never opens a transcript or forwards, stores,
++or logs prompt text, assistant output, error details, or tool arguments.
++Both identifiers must be nonempty strings of at most 512 bytes. They are hashed
++into a Claude-prefixed correlation key; hashing is not anonymization.
++
++Each prompt in each session has a distinct key. The latest started operation
++wins, including across Claude, Codex, and explicit command wrappers. An older
++prompt's completion cannot finish a newer operation. Subagent events cannot
++finish the main prompt, and repeated starts cannot revive its finished notice.
++Other Stop hooks can still ask Claude to continue; RESPONSE READY describes
++the response event and does not certify that an entire session has ended.
++
++Only fixed display labels and the opaque key reach the sibling sender. The
++sender has a 200 ms deadline; the one-second hook timeout bounds stalled input.
++Missing executables, invalid input, and unavailable runtime storage are quiet
++failures. The adapter exits successfully without stdout or stderr and makes no
++approval decision, continuation request, or context injection.
++
++```sh
++cargo test --locked -p t1-touchbar --features workstream-claude \
++  --bin t1-workstream-claude --test workstream_claude
++```
++
++The tests include repeated prompts in one session, stale completions across
++prompts and sessions, subagent isolation, fixed labels, malformed input,
++unavailable storage, and sender timeout cleanup. They use synthetic data and
++private temporary runtime directories; no Claude model call is needed.
+diff --git a/docs/workstream-codex.md b/docs/workstream-codex.md
+new file mode 100644
+index 0000000..cc79cd3
+--- /dev/null
++++ b/docs/workstream-codex.md
+@@ -0,0 +1,117 @@
++# Optional Codex lifecycle signals
++
++`t1-workstream-codex` connects three documented Codex hooks to Workstream. It
++reports brief lifecycle signals, not the model's thoughts or a continuous busy
++indicator:
++
++| Hook | Touch Bar label | Meaning |
++| --- | --- | --- |
++| `UserPromptSubmit` | WORKING | A user turn was submitted. |
++| `Stop` | RESPONSE READY | Codex is yielding a response; this does not certify successful work. |
++| `Interrupt` | INTERRUPTED | The user interrupted the active turn. |
++
++The working signal expires after 10 seconds; response and interruption notices
++expire after 6 seconds. A long turn can therefore leave the ribbon quiet until
++its final event. Use the command wrapper for continuously refreshed status of
++real builds and tests. This first adapter intentionally omits tool-stage and
++approval hooks: a temporary approval pause needs different resumption semantics
++from a terminal notice.
++
++## Build and install
++
++Build the optional adapter alongside its command sender:
++
++```sh
++cargo build --release --locked -p t1-touchbar --features workstream-codex \
++  --bin t1-workstream --bin t1-workstream-codex
++install -d "$HOME/.local/bin"
++install -m 755 target/release/t1-workstream target/release/t1-workstream-codex \
++  "$HOME/.local/bin/"
++```
++
++Both executables must share a directory. The adapter finds `t1-workstream` next
++to its own executable; it does not search `PATH` or invoke a shell. An active
++Workstream renderer is also required to display signals.
++
++## Configure and verify hooks
++
++The [official Codex Hooks guide](https://learn.chatgpt.com/docs/hooks) documents
++user-level `hooks.json`, inline configuration, supported events, and trust
++review. Merge these entries into the chosen hook source, preserving existing
++hooks. This file is a suggested configuration only; building the adapter does
++not install or activate hooks.
++
++```json
++{
++  "description": "Optional Touch Bar lifecycle signals",
++  "hooks": {
++    "UserPromptSubmit": [{
++      "hooks": [{
++        "type": "command",
++        "command": "\"${HOME}/.local/bin/t1-workstream-codex\"",
++        "timeout": 1,
++        "async": false
++      }]
++    }],
++    "Stop": [{
++      "hooks": [{
++        "type": "command",
++        "command": "\"${HOME}/.local/bin/t1-workstream-codex\"",
++        "timeout": 1,
++        "async": false
++      }]
++    }],
++    "Interrupt": [{
++      "hooks": [{
++        "type": "command",
++        "command": "\"${HOME}/.local/bin/t1-workstream-codex\"",
++        "timeout": 1,
++        "async": false
++      }]
++    }]
++  }
++}
++```
++
++In Codex desktop, inspect and trust the exact definitions in the chat's hook
++review banner or **Settings > Hooks > From Config > User config**. The CLI also
++provides `/hooks` for review. New or changed non-managed hooks are skipped until
++reviewed.
++Keep these small hooks synchronous so background delivery cannot reorder them.
++Do not bypass hook trust for installation.
++
++Verify a real new turn in the desktop app before describing the integration as
++active. An enabled CLI feature or a synthetic payload test does not prove that
++the desktop invoked a hook. Check submission, normal response, and interruption
++individually. To disable the integration, disable these entries in the desktop
++hook settings or CLI `/hooks`, or remove only these entries from the hook source.
++
++## Failure and concurrency behavior
++
++The adapter reads at most 64 KiB plus one overflow byte from standard input.
++Malformed, oversized, unsupported, or incomplete events are ignored. It uses
++only the event name and nonempty session/turn strings of at most 512 bytes;
++missing or invalid identifiers produce no signal. Conversation text,
++command arguments, outputs, and transcript paths are never forwarded or logged.
++Identifiers are hashed into opaque correlation keys, not anonymized identifiers.
++
++Each session/turn pair gets a distinct operation key. The sender uses one
++latest-started operation for the ribbon: a completion for an older or different
++operation cannot replace the current one. Repeated starts of the current
++operation do not revive a finished notice. A matching response can finish the
++current operation even after its working signal expired. These guarantees avoid
++one conversation's response clearing another operation's activity; the strip is
++not a queue or a complete view of concurrent conversations.
++
++The sibling sender has a 200 ms deadline and receives only fixed labels and an
++opaque operation key. Missing executables, unavailable runtime state, and sender
++failures are ignored. The adapter emits harmless `{}` JSON and exits successfully;
++it never grants or denies approval, injects context, or asks Codex to continue.
++The one-second Codex hook timeout also bounds a stalled input stream.
++
++Run the adapter's focused checks with:
++
++```sh
++cargo test --locked -p t1-touchbar --features workstream-codex \
++  --bin t1-workstream-codex
++```
+diff --git a/docs/workstream.md b/docs/workstream.md
+new file mode 100644
+index 0000000..bad1bbc
+--- /dev/null
++++ b/docs/workstream.md
+@@ -0,0 +1,74 @@
++# Workstream local prototype
++
++Workstream adds a fixed activity ribbon to the unprivileged Touch Bar renderer.
++The first design uses Tokyo Night colors, a quiet idle label, a rotating blue
++indicator, bright flowing lines and a traveling light during explicitly reported
++work, and a brief green sweep after a successful
++command. Failed commands show a red line and a `FAILED` label. Touching a key
++adds a short blue accent without delaying its normal action.
++
++The row keeps Escape, display brightness, keyboard backlight, media controls,
++mute, and volume. The controls have fixed positions; the ribbon is not a touch
++target. Holding Fn reveals the original full-width Escape/F1–F12 layout in
++Tokyo Night colors. The packaged default renderer retains its original
++monochrome palette and layout. Desktop blanking and Touch ID overlays retain
++priority.
++
++## Build and select
++
++```sh
++cargo build --release --locked -p t1-touchbar \
++  --bin t1-touchbar-tokyo --bin t1-workstream
++```
++
++Install the executables in a user-owned location. Select `t1-touchbar-tokyo`
++through the existing `$XDG_CONFIG_HOME/t1bridge/renderer` entry (normally
++`$HOME/.config/t1bridge/renderer`), preserving any previous selection first.
++Restart the user `t1-touchbar.service`. Never select the launcher binary itself:
++the Tokyo binary directly runs the renderer and cannot recurse through selection.
++Removing this optional selection and restarting restores the packaged renderer.
++No firmware, kernel module, or privileged-service change is required.
++
++## Real command activity
++
++```sh
++t1-workstream run BUILDING -- cargo build --locked
++t1-workstream run CHECKING -- cargo test --locked
++```
++
++The wrapper runs the argument array directly and inherits normal input/output.
++Only the explicit label is displayed; command arguments and output are not put
++in the activity file. The command still runs when the display is unavailable,
++and its exit status is preserved. A successful exit produces `DONE`; a failed
++exit produces `FAILED`. No completion percentage is inferred.
++
++The newest operation owns the single ribbon. Completion of an older operation
++cannot clear newer work. A wrapper refreshes its status every second; an orphaned
++running status expires after ten seconds. Completion stays for three seconds,
++failure/attention for six. These are ephemeral hints, not an activity history.
++
++Explicit integrations can use `begin ID LABEL`, `update ID LABEL`, and
++`done|failed|attention ID [LABEL]`. Use a unique ID for every operation. Terminal
++states cannot be revived by delayed updates. The optional
++[Codex lifecycle adapter](workstream-codex.md) requires a separate trust review
++and observed real hook invocation before it can be called connected.
++The optional [Claude Code adapter](workstream-claude.md) offers prompt, response,
++and API-error signals for Claude Code 2.1.196 or later. Both adapters use fixed
++labels and require a real application turn to verify delivery.
++
++## Motion and storage
++
++Animation requests are capped at one per 34 ms (about 29 fps), coalesced while
++the hardware owns the frame, and stopped when settled, hidden by Fn, or blanked.
++Static key art is cached. A 240 ms press accent stays within the pressed key;
++the success sweep lasts 700 ms. Physical delivery rate still depends on the
++hardware service and should be measured on each machine.
++
++Set `T1_WORKSTREAM_REDUCED_MOTION=1` in the renderer's user-service environment
++to keep state labels while disabling animated effects.
++
++Runtime records are bounded, private, atomic, and expire against Linux uptime.
++They live only under `$XDG_RUNTIME_DIR/t1-workstream`. The reader ignores unsafe,
++malformed, missing, and expired records. There is no network listener or root
++activity process. A short-lived local abstract socket provides writer exclusion
++without unsafe code or stale lock files.
