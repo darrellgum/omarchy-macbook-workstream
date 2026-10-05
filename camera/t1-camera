@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: CC0-1.0
+set -euo pipefail
+case ${1:-status} in
+  on|start) systemctl --user start t1-camera.service ;;
+  off|stop) systemctl --user stop t1-camera.service ;;
+  restart) systemctl --user restart t1-camera.service ;;
+  status) systemctl --user --no-pager status t1-camera.service ;;
+  *) printf 'Usage: t1-camera [on|off|restart|status]\n' >&2; exit 2 ;;
+esac

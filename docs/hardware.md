@@ -29,6 +29,7 @@ These versions document the test environment. Use maintained, compatible package
 | Keyboard backlight integration | Fixed a status query that unintentionally lowered brightness. Read-only reporting preserved the brightness value. [Details](desktop-integration.md). |
 | Media backend | Volume, mute, play/pause, next, and previous passed controlled provider tests with a silent test player. This does not establish every player's behavior. |
 | Wi-Fi and display | Wi-Fi connected; main display active. Intel and AMD graphics drivers loaded. |
+| FaceTime camera | Physical H.264 video decoded at 720p; the on-demand compatibility adapter supplied browser-compatible video. User confirmed the Google Meet preview worked. [Setup and limits](camera.md). |
 
 ## Known limits and unfinished checks
 
@@ -36,7 +37,7 @@ These versions document the test environment. Use maintained, compatible package
 - **GPU power needs investigation.** A service named `omarchy-nvme-suspend-fix.service` wrote `d3cold_allowed=0` to a PCI device that was actually the Radeon GPU on this laptop. The GPU was runtime-active. We did not remove the rule, prove it caused the power behavior, or validate an alternative. Never assume a hard-coded PCI address identifies the same hardware on another machine.
 - **Touch ID after reboot was not retested after enrollment.** Earlier reboots validated the Touch Bar and trackpad change. Cold power-on persistence also remains untested.
 - Bluetooth was detected and unblocked, but pairing and audio were not tested. Startup firmware/baud-rate warnings remain observations rather than a proven functional failure.
-- Camera and microphone devices were registered; capture was not tested. External displays and GPU switching were not tested.
+- Camera cold-boot and suspend/resume behavior remain untested. A working Meet preview does not establish a complete call or microphone capture. External displays and GPU switching were not tested.
 - An older, inactive SPI DKMS package remained installed. It was not the active keyboard driver; cleanup was deferred.
 
 The machine's Apple firmware, calibration, keybags, fingerprints, recovery backups, and raw diagnostic logs are deliberately absent from this repository. A second Mac must use its own data. Our local recovery was attended and specific to this machine; this project is not a firmware recovery bundle.

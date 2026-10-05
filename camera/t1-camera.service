@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: CC0-1.0
+[Unit]
+Description=On-demand FaceTime camera compatibility for browsers
+PartOf=graphical-session.target
+After=graphical-session.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+ExecStart=%h/.local/libexec/t1-camera-start
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=5
+KillMode=control-group
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,6 +1,6 @@
 # Reuse and upstream notices
 
-The original Workstream contributions, downstream scripts, configuration examples,
+The original Workstream contributions, camera relay, downstream scripts, configuration examples,
 and documentation in this repository are dedicated to the public domain under
 [CC0 1.0 Universal](LICENSE), to the extent possible. No personal attribution is
 requested for those contributions. Use, adapt, and incorporate them freely.
@@ -18,6 +18,13 @@ This dedication does not replace anyone else's rights or licenses:
   fetched kernel components have their own GPL terms; this companion package
   does not build or install those components. Cargo dependencies retain their
   respective licenses in the fetched source/package metadata.
+- The camera relay is original userspace code that invokes separately installed
+  FFmpeg and uses the Linux V4L2 interface and v4l2loopback's client-usage event
+  ABI. The [v4l2loopback source](https://github.com/v4l2loopback/v4l2loopback/blob/v0.15.4/v4l2loopback.c)
+  was consulted to implement that interface; no driver implementation is
+  bundled. v4l2loopback and FFmpeg retain their own licenses. Camera setup
+  explicitly installs the distribution's separately packaged virtual-camera
+  module; the Workstream installer does not install it.
 
 The preserved third-party notice file describes the wider upstream project;
 this companion does not bundle its recovery tools or Apple firmware. No binaries,

@@ -46,7 +46,8 @@ application review. The installer does not enable them.
 ## Hardware checks and remaining limits
 
 The user confirmed animated Workstream, real Codex desktop and Claude Code
-events, the trackpad fix after reboot, Touch ID, and 1Password. Media controls
+events, the trackpad fix after reboot, Touch ID, 1Password, and a Google Meet
+camera preview through the optional adapter. Media controls
 were checked against a silent test player. Password fallback was tested for
 each fingerprint-enabled authentication consumer while fprintd was unavailable.
 
@@ -60,10 +61,34 @@ limit, not a measured guarantee of OLED scanout rate. Idle/hidden/blanked states
 stop animation requests; reduced motion is available.
 
 We have not established reliable system suspend/resume, post-enrollment cold
-boot persistence for Touch ID, camera/microphone capture, Bluetooth pairing,
+boot persistence for Touch ID, camera cold-boot persistence, microphone capture, Bluetooth pairing,
 external displays, or GPU power behavior. No T2 or Apple Silicon compatibility
 is claimed. Software versions and upstream hooks can change; recheck current
 upstream guidance before adapting these notes.
+
+## Camera adapter
+
+The optional [camera adapter](camera.md) was tested on the same MacBookPro14,3
+with FFmpeg 2:9.0.1-4 and v4l2loopback 0.15.4-2. It depends on v4l2loopback's
+0.15.4 client-usage event ABI; different releases need verification.
+
+- Physical H.264 capture and decoding worked at 1280×720, nominal 30 fps.
+- The virtual camera supplied YUV420 video. A four-second null-output check
+  delivered 101 frames including startup; a later reopening delivered 60 frames.
+  Numeric frame statistics confirmed live video beyond the initial black frames.
+- Closing or forcibly killing the capture client released the physical camera.
+  Stopping the service during capture also released it; restarting left it idle.
+- User confirmation establishes a working Google Meet preview. A complete
+  meeting, audio capture, cold reboot, and suspend/resume were not tested here.
+- The C17 build passes warnings-as-errors. Synthetic ASan/UBSan tests cover
+  empty event queues, consumer state changes, partial frames, black-buffer
+  isolation, startup timing, child termination, reaping, and exit diagnostics.
+  Those tests do not open a camera.
+
+Camera images and raw diagnostic logs are not included in this repository.
+Physical capture starts only for an active capture client; idle synthetic
+black frames keep virtual-camera timestamps fresh. This behavior was checked
+locally, not inferred solely from the service being active.
 
 ## Reproduce the local checks
 
