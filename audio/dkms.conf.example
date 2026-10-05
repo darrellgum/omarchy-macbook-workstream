@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: CC0-1.0
+PACKAGE_NAME="macbookpro-cs8409"
+PACKAGE_VERSION="0.1.89b22ff.omarchy7253"
+MAKE[0]="make KERNELRELEASE=${kernelver}"
+CLEAN="make KERNELRELEASE=${kernelver} clean"
+BUILT_MODULE_NAME[0]="snd-hda-codec-cs8409"
+BUILT_MODULE_LOCATION[0]="build/hda/codecs/cirrus"
+DEST_MODULE_LOCATION[0]="/updates/dkms"
+AUTOINSTALL="yes"
+# This source baseline was tested on this exact kernel. A new installation
+# requires its own ABI check; a future kernel needs renewed source preparation.
+BUILD_EXCLUSIVE_KERNEL="^7[.]2[.]5-3-omarchy$"
+BUILD_EXCLUSIVE_ARCH="^x86_64$"

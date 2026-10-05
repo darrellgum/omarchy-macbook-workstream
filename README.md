@@ -12,8 +12,9 @@ stay in fixed positions. Hold Fn for the full function-key row.
 *An actual renderer frame from the test laptop. This still image does not show
 the animation.*
 
-This repository also includes a camera adapter and records the trackpad and
-Touch ID work that made one MacBookPro14,3 pleasant to use with Omarchy. It is an early community handoff,
+This repository also includes a camera adapter, a reproducible audio-driver
+build, and the trackpad and Touch ID work that made one MacBookPro14,3 pleasant
+to use with Omarchy. It is an early community handoff,
 tested on one 2017 15-inch T1 MacBook Pro. Other models and software combinations
 need testing. The hardware foundation is [T1Bridge](https://github.com/standardagents/t1bridge).
 
@@ -25,6 +26,7 @@ need testing. The hardware foundation is [T1Bridge](https://github.com/standarda
 | Accidental pointer movement while typing | [Apple SPI trackpad fix](docs/trackpad.md) |
 | Fingerprint enrollment, login prompts, or 1Password | [Touch ID field notes](docs/touch-id.md) |
 | Google Meet reports “Camera Not Found” | [On-demand FaceTime camera adapter](docs/camera.md) — tested with a Google Meet preview |
+| Built-in speakers or microphone do not work | [Apple CS8409 audio setup](docs/audio.md) — pinned to the tested Omarchy kernel, with compatibility checks |
 | Keyboard brightness changes when only its status should be shown | [Optional Omarchy provider fix](docs/desktop-integration.md) |
 | Animations and AI activity | Build Workstream below, then [enable optional hooks](docs/hooks.md) |
 
@@ -98,11 +100,13 @@ restore a failed or stopped service, then checks that the restored renderer
 starts. Private recovery receipts live under
 `${XDG_STATE_HOME:-$HOME/.local/state}/t1-workstream`.
 
-The optional keyboard-provider, trackpad, and camera changes have separate
+The optional keyboard-provider, trackpad, camera, and audio changes have separate
 rollback instructions in their guides. The Workstream installer does not change
 firmware, kernels, authentication, firewall rules, or application hook settings.
 Camera setup is a separate opt-in procedure with explicit administrator steps
-to install and load the v4l2loopback module.
+to install and load the v4l2loopback module. Audio setup likewise has separate,
+explicit administrator steps to install a kernel-specific DKMS driver after
+unprivileged preparation and compatibility checks.
 
 ## Review, reuse, and contribute
 

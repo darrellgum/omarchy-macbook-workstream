@@ -47,7 +47,8 @@ application review. The installer does not enable them.
 
 The user confirmed animated Workstream, real Codex desktop and Claude Code
 events, the trackpad fix after reboot, Touch ID, 1Password, and a Google Meet
-camera preview through the optional adapter. Media controls
+camera preview through the optional adapter. Subsequent audio work restored both
+speaker channels and microphone response in Meet. Media controls
 were checked against a silent test player. Password fallback was tested for
 each fingerprint-enabled authentication consumer while fprintd was unavailable.
 
@@ -61,7 +62,7 @@ limit, not a measured guarantee of OLED scanout rate. Idle/hidden/blanked states
 stop animation requests; reduced motion is available.
 
 We have not established reliable system suspend/resume, post-enrollment cold
-boot persistence for Touch ID, camera cold-boot persistence, microphone capture, Bluetooth pairing,
+boot persistence for Touch ID, camera/audio cold-boot persistence, Bluetooth pairing,
 external displays, or GPU power behavior. No T2 or Apple Silicon compatibility
 is claimed. Software versions and upstream hooks can change; recheck current
 upstream guidance before adapting these notes.
@@ -79,7 +80,8 @@ with FFmpeg 2:9.0.1-4 and v4l2loopback 0.15.4-2. It depends on v4l2loopback's
 - Closing or forcibly killing the capture client released the physical camera.
   Stopping the service during capture also released it; restarting left it idle.
 - User confirmation establishes a working Google Meet preview. A complete
-  meeting, audio capture, cold reboot, and suspend/resume were not tested here.
+  meeting, cold reboot, and suspend/resume were not tested here. Subsequent
+  speaker/microphone checks are recorded in the audio section below.
 - The C17 build passes warnings-as-errors. Synthetic ASan/UBSan tests cover
   empty event queues, consumer state changes, partial frames, black-buffer
   isolation, startup timing, child termination, reaping, and exit diagnostics.
@@ -89,6 +91,40 @@ Camera images and raw diagnostic logs are not included in this repository.
 Physical capture starts only for an active capture client; idle synthetic
 black frames keep virtual-camera timestamps fresh. This behavior was checked
 locally, not inferred solely from the service being active.
+
+## Audio driver
+
+The [audio guide](audio.md) records the exact Linux, Omarchy, and Apple-driver
+revisions used for kernel `7.2.5-3-omarchy`, compiled with GCC 16.2.1. The
+in-tree CS8409 module detected this Apple codec but lacked its model-specific
+initialization. No additional changes to the upstream Apple driver code were
+needed; the preparation includes Omarchy's matching private HDA header changes.
+
+- A fresh run of the public preparation helper downloaded and checksum-verified
+  all 23 pinned inputs, reproducing the 20 source/license files used by the
+  working installation. The public build recipe then passed without network
+  access, and the resulting module passed all 19 live layout checks.
+- All **25 isolated audio-helper tests passed**, covering source integrity,
+  repeat preparation, failure cleanup, wrong-kernel rejection, and malformed or
+  mismatched ABI metadata. These tests do not install or activate audio.
+- Nineteen HDA structures matched live kernel BTF: sizes, member offsets, and
+  bitfields. This was checked before loading; successful compilation alone
+  would not establish compatibility with the distribution's audio backports.
+- DKMS built and signed the module, preserved the original, and selected the
+  replacement. Its loaded source version matched the verified build.
+- User confirmed quiet left/right built-in speaker output, then confirmed
+  Google Meet's microphone indicator responded to their voice.
+- Microphone decoding to a null output succeeded. No recordings were saved or
+  uploaded. Test tones were generated audio; they are not bundled here.
+- Audio services restarted without rebooting. The Touch Bar, camera adapter,
+  and existing T1 hardware services remained active. The kernel log showed no
+  Oops or panic from the driver load and audio checks.
+
+Cold reboot, suspend/resume, headset switching, a complete remote call, and
+subjective microphone quality remain untested. The DKMS example deliberately
+accepts only this exact kernel. No compatibility with a future kernel or another
+Mac is implied by these results. Build helpers do not install or activate the
+driver; installation is a separate, explicit administrator operation.
 
 ## Reproduce the local checks
 
@@ -111,3 +147,13 @@ follow its contributor/build requirements before running `make quality`.
 It requires more development packages than the four-binary build. Raw local
 logs are not included because build paths and machine diagnostics can contain
 personal data.
+
+For the separate audio helpers, run the isolated tests without audio activation:
+
+```sh
+python3 -m unittest discover -s audio/tests -p 'test_*.py'
+```
+
+Then use the pinned source build and live compatibility-check commands in the
+[audio guide](audio.md#prepare-and-check-without-administrator-access). Those
+commands do not install or load the candidate module.

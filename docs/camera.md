@@ -45,7 +45,8 @@ stream internally. Close another application's preview if the camera is busy.
 Cold reboot and suspend/resume have not been verified for this adapter. A
 working preview does not establish a complete call, microphone support, or
 compatibility with other Mac models. T2 and Apple Silicon are outside this
-tested scope.
+tested scope. Subsequent speaker and microphone checks are documented in the
+separate [audio guide](audio.md).
 
 ## Install explicitly
 

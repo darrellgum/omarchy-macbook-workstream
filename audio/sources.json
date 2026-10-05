@@ -1,0 +1,272 @@
+{
+  "schema_version": 1,
+  "kernel": "7.2.5-3-omarchy",
+  "architecture": "x86_64",
+  "linux_stable_commit": "a300e35c0a4b4a38fb53742ea6e2a203c98ee523",
+  "linux_stable_tag": "v7.2.5",
+  "apple_driver_commit": "89b22ff90b86468b186706861dd18663562defa7",
+  "omarchy_package_commit": "7b11c97603dd9d751d803746560ee51640709725",
+  "inputs": [
+    {
+      "path": "linux/sound/hda/codecs/cirrus/cs8409.c",
+      "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/hda/codecs/cirrus/cs8409.c?id=a300e35c0a4b4a38fb53742ea6e2a203c98ee523",
+      "sha256": "24ed31af6d966a3bd055c4cb5e973500733c7f8c3a611b981f39c1d1a1798b06",
+      "bytes": 48071,
+      "copy_to": "build/hda/codecs/cirrus/cs8409.c"
+    },
+    {
+      "path": "linux/sound/hda/codecs/cirrus/cs8409.h",
+      "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/hda/codecs/cirrus/cs8409.h?id=a300e35c0a4b4a38fb53742ea6e2a203c98ee523",
+      "sha256": "90022b9e07da4ce06512eeb2a0e649681ff84364b548be064247bd98f37d0bfe",
+      "bytes": 10299,
+      "copy_to": "build/hda/codecs/cirrus/cs8409.h"
+    },
+    {
+      "path": "linux/sound/hda/codecs/cirrus/cs8409-tables.c",
+      "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/hda/codecs/cirrus/cs8409-tables.c?id=a300e35c0a4b4a38fb53742ea6e2a203c98ee523",
+      "sha256": "15bbfda8ad3bf245d0ecaf592ca9775c5c196a4a358c11a50a6cff6684996836",
+      "bytes": 28142,
+      "copy_to": "build/hda/codecs/cirrus/cs8409-tables.c"
+    },
+    {
+      "path": "linux/sound/hda/codecs/generic.h",
+      "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/hda/codecs/generic.h?id=a300e35c0a4b4a38fb53742ea6e2a203c98ee523",
+      "sha256": "9175959750d86f715d15eb2e4c063a95861ed7d737418e9f55843b1af04446d6",
+      "bytes": 12468,
+      "copy_to": "build/hda/codecs/generic.h"
+    },
+    {
+      "path": "linux/sound/hda/common/hda_local.h",
+      "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/hda/common/hda_local.h?id=a300e35c0a4b4a38fb53742ea6e2a203c98ee523",
+      "sha256": "21b31260451c5fd4868f030cad31b86012acd3e5091caaa39a902d648073d2a9",
+      "bytes": 24611,
+      "copy_to": "build/hda/common/hda_local.h"
+    },
+    {
+      "path": "linux/sound/hda/common/hda_auto_parser.h",
+      "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/hda/common/hda_auto_parser.h?id=a300e35c0a4b4a38fb53742ea6e2a203c98ee523",
+      "sha256": "59c9e34e50f22e36ddc45dc22ca822838104e745884e6841bee73e65876a0716",
+      "bytes": 3424,
+      "copy_to": "build/hda/common/hda_auto_parser.h"
+    },
+    {
+      "path": "linux/sound/hda/common/hda_jack.h",
+      "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/hda/common/hda_jack.h?id=a300e35c0a4b4a38fb53742ea6e2a203c98ee523",
+      "sha256": "b6af84afebab898958e2a972acab3783ed1849c826961f8333f01bd127572b49",
+      "bytes": 5913,
+      "copy_to": "build/hda/common/hda_jack.h"
+    },
+    {
+      "path": "linux/sound/hda/codecs/side-codecs/hda_component.h",
+      "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/hda/codecs/side-codecs/hda_component.h?id=a300e35c0a4b4a38fb53742ea6e2a203c98ee523",
+      "sha256": "71559a1d0d50d05e63b593dac96a041791292500dfedd606334804487fbcc8ae",
+      "bytes": 3071,
+      "copy_to": "build/hda/codecs/side-codecs/hda_component.h"
+    },
+    {
+      "path": "apple/LICENSE",
+      "url": "https://raw.githubusercontent.com/davidjo/snd_hda_macbookpro/89b22ff90b86468b186706861dd18663562defa7/LICENSE",
+      "sha256": "091f12b2fa3623ded73330f65776bad538b50e87c617677b6aa3b6472bee368c",
+      "bytes": 18004,
+      "copy_to": "LICENSE"
+    },
+    {
+      "path": "apple/Makefile",
+      "url": "https://raw.githubusercontent.com/davidjo/snd_hda_macbookpro/89b22ff90b86468b186706861dd18663562defa7/Makefile",
+      "sha256": "46213eacfcf945b856e8aea45375448e1c2c3008807dedf1c7686583fd59c869",
+      "bytes": 987,
+      "copy_to": "Makefile"
+    },
+    {
+      "path": "apple/makefiles/Makefile",
+      "url": "https://raw.githubusercontent.com/davidjo/snd_hda_macbookpro/89b22ff90b86468b186706861dd18663562defa7/makefiles/Makefile",
+      "sha256": "b7439d9319e734cf57b42107914bec87d9e5d5d6a7a878167f3dcf28714caad7",
+      "bytes": 298,
+      "copy_to": "build/hda/Makefile"
+    },
+    {
+      "path": "apple/makefiles/Makefile_common",
+      "url": "https://raw.githubusercontent.com/davidjo/snd_hda_macbookpro/89b22ff90b86468b186706861dd18663562defa7/makefiles/Makefile_common",
+      "sha256": "b35818428f2d015bcb2a9492e09f5f42c28e1dee5ea08d14ccd0cdda556cdef3",
+      "bytes": 396,
+      "copy_to": "build/hda/common/Makefile"
+    },
+    {
+      "path": "apple/makefiles/Makefile_codecs",
+      "url": "https://raw.githubusercontent.com/davidjo/snd_hda_macbookpro/89b22ff90b86468b186706861dd18663562defa7/makefiles/Makefile_codecs",
+      "sha256": "5bb541bdfc692020e537c79d800a53ebbc23c1c70d8ef5241fb5011a1c5deb7a",
+      "bytes": 1354,
+      "copy_to": "build/hda/codecs/Makefile"
+    },
+    {
+      "path": "apple/makefiles/Makefile_cirrus",
+      "url": "https://raw.githubusercontent.com/davidjo/snd_hda_macbookpro/89b22ff90b86468b186706861dd18663562defa7/makefiles/Makefile_cirrus",
+      "sha256": "3c4e6cceb04141bc0172af060520fa6dc4e7facc8910594b22e36b395091a921",
+      "bytes": 387,
+      "copy_to": "build/hda/codecs/cirrus/Makefile"
+    },
+    {
+      "path": "apple/patch_cirrus/cirrus_apple.h",
+      "url": "https://raw.githubusercontent.com/davidjo/snd_hda_macbookpro/89b22ff90b86468b186706861dd18663562defa7/patch_cirrus/cirrus_apple.h",
+      "sha256": "c410540874beff8e7befd1e4b472d57dad50821c173b3b96fd4af52ac4431949",
+      "bytes": 123449,
+      "copy_to": "build/hda/codecs/cirrus/cirrus_apple.h"
+    },
+    {
+      "path": "apple/patch_cirrus/patch_cirrus_boot84.h",
+      "url": "https://raw.githubusercontent.com/davidjo/snd_hda_macbookpro/89b22ff90b86468b186706861dd18663562defa7/patch_cirrus/patch_cirrus_boot84.h",
+      "sha256": "c5efdcec9cdf9cfc5b4975b4d238cdad98e2c4302e0c4067c70b73234b185fb9",
+      "bytes": 213049,
+      "copy_to": "build/hda/codecs/cirrus/patch_cirrus_boot84.h"
+    },
+    {
+      "path": "apple/patch_cirrus/patch_cirrus_hda_generic_copy.h",
+      "url": "https://raw.githubusercontent.com/davidjo/snd_hda_macbookpro/89b22ff90b86468b186706861dd18663562defa7/patch_cirrus/patch_cirrus_hda_generic_copy.h",
+      "sha256": "f405aa473b5aa0bfccb139a05e632dabe73af6aeb5757ab33d990c7571a3c281",
+      "bytes": 11569,
+      "copy_to": "build/hda/codecs/cirrus/patch_cirrus_hda_generic_copy.h"
+    },
+    {
+      "path": "apple/patch_cirrus/patch_cirrus_new84.h",
+      "url": "https://raw.githubusercontent.com/davidjo/snd_hda_macbookpro/89b22ff90b86468b186706861dd18663562defa7/patch_cirrus/patch_cirrus_new84.h",
+      "sha256": "b580444189e89ef211172192e3a5f901828d7ffb5eacfdf8813a7b86d048e18e",
+      "bytes": 75816,
+      "copy_to": "build/hda/codecs/cirrus/patch_cirrus_new84.h"
+    },
+    {
+      "path": "apple/patch_cirrus/patch_cirrus_real84.h",
+      "url": "https://raw.githubusercontent.com/davidjo/snd_hda_macbookpro/89b22ff90b86468b186706861dd18663562defa7/patch_cirrus/patch_cirrus_real84.h",
+      "sha256": "a2c0a96cefc8adff9b5791d2ea93580ceb02d97012216dfbd37bd4b529a14c25",
+      "bytes": 285353,
+      "copy_to": "build/hda/codecs/cirrus/patch_cirrus_real84.h"
+    },
+    {
+      "path": "apple/patch_cirrus/patch_cirrus_real84_i2c.h",
+      "url": "https://raw.githubusercontent.com/davidjo/snd_hda_macbookpro/89b22ff90b86468b186706861dd18663562defa7/patch_cirrus/patch_cirrus_real84_i2c.h",
+      "sha256": "5becd39e05b8a27e7a337fc1651a4fe6c71d21be47c934cd76407351f24d4f5a",
+      "bytes": 87744,
+      "copy_to": "build/hda/codecs/cirrus/patch_cirrus_real84_i2c.h"
+    },
+    {
+      "path": "apple/patch_cs8409.c.diff",
+      "url": "https://raw.githubusercontent.com/davidjo/snd_hda_macbookpro/89b22ff90b86468b186706861dd18663562defa7/patch_cs8409.c.diff",
+      "sha256": "c9bfb0f3b2f2c6622e24fd1b6a3742d00789fbe0a25d3471bc3fcd1abdbb7747",
+      "bytes": 1453
+    },
+    {
+      "path": "apple/patch_cs8409.h.diff",
+      "url": "https://raw.githubusercontent.com/davidjo/snd_hda_macbookpro/89b22ff90b86468b186706861dd18663562defa7/patch_cs8409.h.diff",
+      "sha256": "e7456981d6f9f2ed52b61a5e45a6946ef12d07ef645c0f32b5162969ee590d99",
+      "bytes": 18969
+    },
+    {
+      "path": "omarchy/0510-sound-updates.patch",
+      "url": "https://raw.githubusercontent.com/omacom/omarchy-pkgs/7b11c97603dd9d751d803746560ee51640709725/pkgbuilds/linux-omarchy/0510-sound-updates.patch",
+      "sha256": "2762f72620781a672d9a21bcc591b862b04a756b271cd1009a7390eb1b77635e",
+      "bytes": 1681476
+    }
+  ],
+  "output_files": [
+    {
+      "path": "LICENSE",
+      "sha256": "091f12b2fa3623ded73330f65776bad538b50e87c617677b6aa3b6472bee368c"
+    },
+    {
+      "path": "Makefile",
+      "sha256": "46213eacfcf945b856e8aea45375448e1c2c3008807dedf1c7686583fd59c869"
+    },
+    {
+      "path": "build/hda/Makefile",
+      "sha256": "b7439d9319e734cf57b42107914bec87d9e5d5d6a7a878167f3dcf28714caad7"
+    },
+    {
+      "path": "build/hda/codecs/Makefile",
+      "sha256": "5bb541bdfc692020e537c79d800a53ebbc23c1c70d8ef5241fb5011a1c5deb7a"
+    },
+    {
+      "path": "build/hda/codecs/cirrus/Makefile",
+      "sha256": "3c4e6cceb04141bc0172af060520fa6dc4e7facc8910594b22e36b395091a921"
+    },
+    {
+      "path": "build/hda/codecs/cirrus/cirrus_apple.h",
+      "sha256": "c410540874beff8e7befd1e4b472d57dad50821c173b3b96fd4af52ac4431949"
+    },
+    {
+      "path": "build/hda/codecs/cirrus/cs8409-tables.c",
+      "sha256": "15bbfda8ad3bf245d0ecaf592ca9775c5c196a4a358c11a50a6cff6684996836"
+    },
+    {
+      "path": "build/hda/codecs/cirrus/cs8409.c",
+      "sha256": "06fdc482058b840ccce20e1d522bf0331442b995fe3f147add1611f3a52bee80"
+    },
+    {
+      "path": "build/hda/codecs/cirrus/cs8409.h",
+      "sha256": "8eb7d8d4f1c5e7526b777af24582ebc32e2487021976885d317416991e2dddda"
+    },
+    {
+      "path": "build/hda/codecs/cirrus/patch_cirrus_boot84.h",
+      "sha256": "c5efdcec9cdf9cfc5b4975b4d238cdad98e2c4302e0c4067c70b73234b185fb9"
+    },
+    {
+      "path": "build/hda/codecs/cirrus/patch_cirrus_hda_generic_copy.h",
+      "sha256": "f405aa473b5aa0bfccb139a05e632dabe73af6aeb5757ab33d990c7571a3c281"
+    },
+    {
+      "path": "build/hda/codecs/cirrus/patch_cirrus_new84.h",
+      "sha256": "b580444189e89ef211172192e3a5f901828d7ffb5eacfdf8813a7b86d048e18e"
+    },
+    {
+      "path": "build/hda/codecs/cirrus/patch_cirrus_real84.h",
+      "sha256": "a2c0a96cefc8adff9b5791d2ea93580ceb02d97012216dfbd37bd4b529a14c25"
+    },
+    {
+      "path": "build/hda/codecs/cirrus/patch_cirrus_real84_i2c.h",
+      "sha256": "5becd39e05b8a27e7a337fc1651a4fe6c71d21be47c934cd76407351f24d4f5a"
+    },
+    {
+      "path": "build/hda/codecs/generic.h",
+      "sha256": "9175959750d86f715d15eb2e4c063a95861ed7d737418e9f55843b1af04446d6"
+    },
+    {
+      "path": "build/hda/codecs/side-codecs/hda_component.h",
+      "sha256": "71559a1d0d50d05e63b593dac96a041791292500dfedd606334804487fbcc8ae"
+    },
+    {
+      "path": "build/hda/common/Makefile",
+      "sha256": "b35818428f2d015bcb2a9492e09f5f42c28e1dee5ea08d14ccd0cdda556cdef3"
+    },
+    {
+      "path": "build/hda/common/hda_auto_parser.h",
+      "sha256": "c1f46247b8dc659d53e4afc5c4eeb5cf8ce45878eda454a77a209b11fdaa8b78"
+    },
+    {
+      "path": "build/hda/common/hda_jack.h",
+      "sha256": "b6af84afebab898958e2a972acab3783ed1849c826961f8333f01bd127572b49"
+    },
+    {
+      "path": "build/hda/common/hda_local.h",
+      "sha256": "a70a791c8713eb236a0422612a8a9f81089b8ac29ba5b3d077be57315c3dc9c2"
+    }
+  ],
+  "expected_abi_types": [
+    "hda_gen_spec",
+    "hda_codec",
+    "hda_multi_out",
+    "auto_pin_cfg",
+    "auto_pin_cfg_item",
+    "nid_path",
+    "hda_pcm_stream",
+    "hda_pcm",
+    "hda_jack_tbl",
+    "hda_jack_callback",
+    "hda_fixup",
+    "hda_input_mux",
+    "hda_amp_list",
+    "hda_loopback_check",
+    "hda_vmaster_mute_hook",
+    "hda_multi_io",
+    "automic_entry",
+    "badness_table",
+    "snd_array"
+  ]
+}
