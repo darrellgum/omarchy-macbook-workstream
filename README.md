@@ -29,6 +29,15 @@ need testing. The hardware foundation is [T1Bridge](https://github.com/standarda
 | Built-in speakers or microphone do not work | [Apple CS8409 audio setup](docs/audio.md) — pinned to the tested Omarchy kernel, with compatibility checks |
 | Keyboard brightness changes when only its status should be shown | [Optional Omarchy provider fix](docs/desktop-integration.md) |
 | Animations and AI activity | Build Workstream below, then [enable optional hooks](docs/hooks.md) |
+| A dashboard bar instead (workspaces, CPU/memory/network, weather, battery, clock) | [t1-dash renderer](docs/touchbar-renderer.md), a separate option alongside Workstream |
+| Touch Bar, Touch ID, or Wi-Fi dead after S3 sleep | [S3 sleep and T1 wake](docs/sleep.md) |
+
+## Workstream and t1-dash
+
+Workstream was the first renderer here, an alpha to prove a custom Touch Bar
+was possible. [t1-dash](docs/touchbar-renderer.md) is the more polished take,
+built once the Touch Bar and Touch ID survived sleep ([S3 wake fixes](docs/sleep.md)).
+Both are kept; pick one.
 
 ## Build and try Workstream
 

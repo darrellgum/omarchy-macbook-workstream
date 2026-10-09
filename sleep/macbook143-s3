@@ -1,0 +1,79 @@
+#!/bin/bash
+# MacBookPro14,3 S3 (deep sleep) helper. Runs only on the kernel named in KERNEL_GLOB.
+#   pre      before sleep: SSD (NVMe) d3cold off; Wi-Fi signed off, radio off, brcmfmac unloaded
+#   post     after resume: wake the T1 (ACPI ASOC.SOCW(1) "host awake", then Touch Bar display-on
+#            report 03 02 f4 01), reload brcmfmac, radio on, then start the Wi-Fi check below
+#   wifichk  leave a working connection alone (any band); only without IPv4: rescan and reconnect
+#   lid      at boot: make lid close suspend on battery (runtime logind drop-in in /run)
+# Never calls ASOC.FRST: that is an EC hard reset that leaves the T1 in recovery.
+# Optional overrides in /etc/default/macbook143-s3: KERNEL_GLOB, NVME_PCI, WIFI_IF.
+set -u
+KERNEL_GLOB='*-amdfix'
+NVME_PCI=0000:02:00.0
+WIFI_IF=
+[ -r /etc/default/macbook143-s3 ] && . /etc/default/macbook143-s3
+# shellcheck disable=SC2254
+case "$(uname -r)" in $KERNEL_GLOB) ;; *) exit 0;; esac
+log(){ logger -t macbook143-s3 "$*"; echo "$*"; }
+wifi_if(){
+  [ -n "$WIFI_IF" ] && { echo "$WIFI_IF"; return; }
+  local d
+  for d in /sys/class/net/*; do
+    [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = brcmfmac ] && { basename "$d"; return; }
+  done
+  # after unload the driver link is gone; fall back to any wireless interface
+  for d in /sys/class/net/*/wireless; do [ -e "$d" ] && { basename "$(dirname "$d")"; return; }; done
+}
+t1wake(){
+  modprobe acpi_call 2>/dev/null; [ -w /proc/acpi/call ] || { log "acpi_call missing, T1 not woken"; return; }
+  local i r
+  for i in 1 2 3; do
+    echo '\_SB.PCI0.XHC1.RHUB.ASOC.SOCW 1' > /proc/acpi/call; r=$(tr -d '\0' < /proc/acpi/call)
+    log "T1 SOCW(1) try $i returned $r"; [ "$r" = 0x0 ] && break; sleep 1
+  done
+  for i in $(seq 10); do
+    python3 /usr/local/lib/macbook143-s3/t1-display-on.py >/dev/null 2>&1 && { log "Touch Bar display-on sent"; return; }
+    sleep 1
+  done; log "Touch Bar hidraw not found, display-on skipped"
+}
+NVME=/sys/bus/pci/devices/$NVME_PCI
+case "${1:-}" in
+  pre)
+    [ "$(cat "$NVME/class" 2>/dev/null)" = 0x010802 ] && echo 0 > "$NVME/d3cold_allowed" && log "NVMe $NVME_PCI d3cold_allowed=0"
+    if lsmod | grep -q '^brcmfmac '; then
+      IF=$(wifi_if)
+      nmcli dev disconnect "$IF" 2>/dev/null && log "Wi-Fi signed off (deauth) before sleep"; sleep 1
+      nmcli radio wifi off 2>/dev/null; sleep 1
+      ip link set "$IF" down 2>/dev/null
+      rmmod brcmfmac_wcc brcmfmac 2>/dev/null || rmmod brcmfmac
+      if lsmod | grep -q '^brcmfmac '; then log "WARNING: brcmfmac still loaded"; else log "brcmfmac unloaded"; fi
+    fi ;;
+  post)
+    t1wake
+    modprobe brcmfmac && log "brcmfmac reloaded"
+    sleep 2; nmcli radio wifi on 2>/dev/null && log "Wi-Fi radio on"
+    # runs outside this unit so systemd does not kill it when the unit stops
+    systemd-run --no-block --collect --unit="macbook143-wifichk-$$" /usr/local/sbin/macbook143-s3 wifichk >/dev/null 2>&1
+    ;;
+  wifichk)
+    # A connection that came back on its own (on any band) is left alone. Only when there is
+    # no IPv4 address: fresh scan, connect, and one more disconnect/rescan/connect if still down.
+    sleep 8; IF=$(wifi_if)
+    has4(){ ip -4 addr show "$IF" | grep -q inet; }
+    has4 && { log "Wi-Fi already up after wake, leaving it alone"; exit 0; }
+    log "Wi-Fi: no IPv4 after wake, rescanning"
+    nmcli dev wifi rescan ifname "$IF" 2>/dev/null; sleep 6
+    nmcli dev connect "$IF" >/dev/null 2>&1
+    sleep 20
+    if ! has4; then
+      log "Wi-Fi: no IPv4 after wake, reconnecting"
+      nmcli dev disconnect "$IF"; sleep 2; nmcli dev wifi rescan ifname "$IF"; sleep 6; nmcli dev connect "$IF"
+    fi
+    # log the frequency only, never the network name
+    log "Wi-Fi after wake: $(iw dev "$IF" link 2>/dev/null | grep -E 'freq' | tr -s ' \n\t' ' ')" ;;
+  lid)
+    mkdir -p /run/systemd/logind.conf.d
+    printf '[Login]\n# written at boot by macbook143-lid.service: S3 works on this kernel, so suspend on lid close\nHandleLidSwitch=suspend\n' > /run/systemd/logind.conf.d/90-macbook143-lid.conf
+    systemctl kill -s HUP systemd-logind && log "lid close set to suspend for this boot" ;;
+  *) echo "usage: $0 pre|post|wifichk|lid"; exit 2;;
+esac

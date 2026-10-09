@@ -1,0 +1,10 @@
+[Unit]
+Description=MacBookPro14,3 lid close suspends (no-op outside KERNEL_GLOB)
+After=systemd-logind.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/macbook143-s3 lid
+
+[Install]
+WantedBy=multi-user.target
