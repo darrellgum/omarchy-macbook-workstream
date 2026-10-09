@@ -38,9 +38,9 @@ fn save(s: &Scene, marks: &Marks, text: &mut Text, path: &Path) -> Pixmap {
 }
 
 pub fn render_all(dir: &Path) {
-    let generic = !cfg!(feature = "grok-bot");
     std::fs::create_dir_all(dir).unwrap();
-    let marks = Marks::builtin();
+    let marks = Marks::load();
+    let generic = marks.is_empty();
     let mut text = Text::load(None);
     let mut s = demo_scene();
     if generic { s.bots.clear(); s.activities = demo_activities(); }

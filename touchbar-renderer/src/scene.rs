@@ -435,13 +435,12 @@ pub mod tests {
         }
     }
 
-    #[cfg(feature = "grok-bot")]
     #[test]
     fn layout_hits_cover_controls() {
         let s = sample_scene();
         let mut pm = Pixmap::new(s.width, s.height).unwrap();
         let mut text = Text::load(None);
-        let f = s.render(&mut pm, &Marks::builtin(), &mut text);
+        let f = s.render(&mut pm, &Marks::synthetic(), &mut text);
         assert_eq!(hit_test(&f.hits, 30.0, 30.0), Some(Hit::Esc));
         let ws: Vec<i64> = f.hits.iter().filter_map(|(_, h)| if let Hit::Workspace(i) = h { Some(*i) } else { None }).collect();
         assert_eq!(ws, vec![1, 2, 3, 4, 5]);
@@ -456,7 +455,7 @@ pub mod tests {
         let mut s = sample_scene();
         s.fn_pressed = true;
         let mut pm = Pixmap::new(s.width, s.height).unwrap();
-        let f = s.render(&mut pm, &Marks::builtin(), &mut Text::load(None));
+        let f = s.render(&mut pm, &Marks::synthetic(), &mut Text::load(None));
         assert_eq!(f.hits.len(), 13);
         assert_eq!(hit_test(&f.hits, 2160.0, 30.0), Some(Hit::FKey(12)));
         assert_eq!(hit_test(&f.hits, 20.0, 30.0), Some(Hit::FKey(0)));
@@ -497,21 +496,20 @@ pub mod tests {
         let mut s = sample_scene();
         s.touch_id = Some(TouchId::Authenticate);
         let mut pm = Pixmap::new(s.width, s.height).unwrap();
-        s.render(&mut pm, &Marks::builtin(), &mut Text::load(None));
+        s.render(&mut pm, &Marks::synthetic(), &mut Text::load(None));
         let w = s.width as usize;
         let green_right = pm.pixels().iter().enumerate().filter(|(i, p)| i % w > 1900 && p.green() > 60 && p.red() < 40).count();
         assert!(green_right > 100, "{green_right}");
         s.touch_id = Some(TouchId::Success);
-        s.render(&mut pm, &Marks::builtin(), &mut Text::load(None));
+        s.render(&mut pm, &Marks::synthetic(), &mut Text::load(None));
         assert_eq!(pm.pixels().iter().enumerate().filter(|(i, p)| i % w > 1900 && p.green() > 60 && p.red() < 40).count(), 0);
     }
-    #[cfg(feature = "grok-bot")]
     #[test]
     fn working_bot_draws_green_dot() {
         let mut s = sample_scene();
         s.bots[0].1 = true;
         let mut pm = Pixmap::new(s.width, s.height).unwrap();
-        let f = s.render(&mut pm, &Marks::builtin(), &mut Text::load(None));
+        let f = s.render(&mut pm, &Marks::synthetic(), &mut Text::load(None));
         assert!(f.animating);
         let green = pm.pixels().iter().filter(|p| p.red() == 0 && p.green() == 0xc9 && p.blue() == 0x72).count();
         assert!(green > 10, "green pixels {green}");

@@ -1,6 +1,5 @@
 //! t1-dash: custom T1Bridge Touch Bar renderer (v1).
 #![allow(clippy::too_many_arguments)]
-#![cfg_attr(not(feature = "grok-bot"), allow(dead_code))]
 mod bots;
 mod config;
 mod draw;
@@ -72,7 +71,7 @@ impl Live {
             cfg_mtime: mtime(&cfg_path), cfg_path,
             theme_path: None, theme_mtime: None, roster_path: None, roster_mtime: None,
             status_dir: PathBuf::new(), all_bots: vec![],
-            marks: marks::Marks::builtin(), text,
+            marks: marks::Marks::load(), text,
             sys: sysmon::SysMon::new(PathBuf::from("/")),
             scene: Scene {
                 width, height, cfg, theme: theme::Theme::default(), bots: vec![], workspaces: vec![], active_ws: 1,
@@ -91,7 +90,7 @@ impl Live {
         let cfg = &self.scene.cfg;
         self.theme_path = cfg.theme.path.clone().or_else(|| theme::default_theme_paths(&home()).into_iter().find(|p| p.exists()));
         self.theme_mtime = None;
-        self.roster_path = if grok_enabled(cfg) { cfg.bots.roster.clone().or_else(|| bots::find_roster(&self.persistence_dir)) } else { None };
+        self.roster_path = if grok_enabled(cfg) && !self.marks.is_empty() { cfg.bots.roster.clone().or_else(|| bots::find_roster(&self.persistence_dir)) } else { None };
         if self.roster_path.is_none() { self.all_bots.clear(); self.replicas.clear(); }
         self.roster_mtime = None;
         self.status_dir = cfg.bots.status_dir.clone().unwrap_or_else(|| home().join(".local/state/touchbar/bots"));

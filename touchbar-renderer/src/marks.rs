@@ -1,5 +1,6 @@
-//! Grok Bot marks: geometry baked from the desktop app (assets/marks.json, see
-//! tools/gen-marks.cjs) and a 2D port of its idle/working animation.
+//! Grok Bot marks: geometry extracted at runtime from the locally installed app
+//! (tools/extract-marks.cjs, cached in ~/.cache/t1-dash/marks.json) and a 2D port of its
+//! idle/working animation. No app artwork is compiled in.
 use crate::theme::Rgb;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -32,14 +33,43 @@ pub struct Marks {
 }
 
 impl Marks {
-    #[cfg(feature = "grok-bot")]
-    pub fn builtin() -> Marks {
-        Marks::from_json(include_str!("../assets/marks.json")).expect("baked marks.json")
-    }
-    #[cfg(not(feature = "grok-bot"))]
-    pub fn builtin() -> Marks {
+    pub fn empty() -> Marks {
         Marks { center: 114.2705, colors: HashMap::new(), shapes: HashMap::new() }
     }
+    pub fn is_empty(&self) -> bool { self.shapes.is_empty() }
+
+    /// Geometry from the cache, re-extracted from the installed app when the cache is missing or
+    /// older than the app archive. Empty when the app is absent or extraction fails.
+    #[cfg(feature = "grok-bot")]
+    pub fn load() -> Marks {
+        let asar = std::path::PathBuf::from(std::env::var_os("T1_DASH_GROK_ASAR").unwrap_or_else(|| "/opt/Grok Bot/resources/app.asar".into()));
+        let cache = std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")).join("t1-dash");
+        let out = cache.join("marks.json");
+        let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let Some(app_time) = mtime(&asar) else { return Marks::empty() };
+        if mtime(&out).is_none_or(|t| t < app_time) {
+            let script = cache.join("extract-marks.cjs");
+            let _ = std::fs::create_dir_all(&cache);
+            let _ = std::fs::write(&script, include_str!("../tools/extract-marks.cjs"));
+            let electron = asar.parent().and_then(|p| p.parent()).map(|p| p.join("grok-bot"));
+            let ran = |cmd: &mut std::process::Command| cmd.arg(&script).arg(&asar).arg(&out).stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+            let ok = electron.is_some_and(|e| ran(std::process::Command::new(e).env("ELECTRON_RUN_AS_NODE", "1")))
+                || ran(&mut std::process::Command::new("node"))
+                || ran(&mut std::process::Command::new(std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share/mise/shims/node")));
+            if !ok { eprintln!("t1-dash: could not extract Grok Bot marks from {}", asar.display()); }
+        }
+        match std::fs::read_to_string(&out).map_err(|e| e.to_string()).and_then(|t| Marks::from_json(&t)) {
+            Ok(m) => m,
+            Err(e) => { eprintln!("t1-dash: Grok Bot marks unavailable: {e}"); Marks::empty() }
+        }
+    }
+    #[cfg(not(feature = "grok-bot"))]
+    pub fn load() -> Marks { Marks::empty() }
+
+    /// Synthetic test geometry (plain polygons), not app artwork.
+    #[cfg(test)]
+    pub fn synthetic() -> Marks { Marks::from_json(include_str!("../tests/fixtures/marks-synthetic.json")).unwrap() }
     pub fn from_json(text: &str) -> Result<Marks, String> {
         let raw: RawMarks = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let mut shapes = HashMap::new();
@@ -251,10 +281,9 @@ pub fn parse_svg_path(d: &str) -> Option<Path> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "grok-bot")]
     #[test]
     fn all_18_shapes_load() {
-        let m = Marks::builtin();
+        let m = Marks::synthetic();
         assert_eq!(m.shapes.len(), 18);
         assert_eq!(m.colors["orange"], Rgb(0xFF, 0x67, 0x00));
         assert_eq!(m.colors["black"], Rgb(0xFF, 0xFF, 0xFF));
@@ -273,7 +302,6 @@ mod tests {
         assert!((blink_curve(0.15) - 1.08).abs() < 1e-3);
         assert_eq!(blink_curve(0.5), 1.0);
     }
-    #[cfg(feature = "grok-bot")]
     #[test]
     fn working_pose_moves_and_has_dot() {
         let a: Vec<Pose> = (0..30).map(|i| animate("atlas", true, i as f32 * 0.033, 40.0).0).collect();

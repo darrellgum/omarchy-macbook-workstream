@@ -97,18 +97,20 @@ T2 models have no T1Bridge, so t1-dash ships a small root bridge,
 
 ## Optional Grok Bot integration
 
-When built with the `grok-bot` Cargo feature, the bar can also show the Grok
-Bot desktop app's agents as their avatar marks, with the app's idle and working
-animations, its unread count and "awaiting you" badge, and tap to focus the
-app. It reads the app's local roster file read-only and makes no network calls.
-`bots.enabled` in the config forces it on or off; unset, it turns on only when
-`~/.config/Grok Bot/sand-client-persistence` exists. When it is off or not
-built, the bots widget takes no space and the activity widget is used instead.
+When the Grok Bot desktop app is installed, the bar also shows its agents as
+their avatar marks, with the app's idle and working animations, its unread
+count and "awaiting you" badge, and tap to focus the app. It reads the app's
+local roster file read-only and makes no network calls. `bots.enabled` in the
+config forces it on or off; unset, it turns on when the app's data directory
+exists.
 
-The avatar artwork belongs to the app and is not included. See
-[touchbar-renderer/tools/README.md](../touchbar-renderer/tools/README.md) to
-generate `assets/marks.json` from your own installed copy. `build.sh` enables
-the feature only when that file exists.
+The avatar artwork belongs to the app and is not included. On start, t1-dash
+extracts the mark geometry from the locally installed app into
+`~/.cache/t1-dash/marks.json` and refreshes it after app updates (see
+[touchbar-renderer/tools/README.md](../touchbar-renderer/tools/README.md)).
+If the app is absent or extraction fails, the bots widget takes no space and
+the activity widget is used instead. `--no-default-features` builds leave the
+integration out entirely.
 
 ## Build, select, and restore
 
@@ -139,9 +141,9 @@ overwrite a selection changed after it was installed.
 ## Tested scope and limits
 
 - One MacBookPro14,3, T1Bridge 0.1.12, panel 2170x60, Omarchy on Hyprland.
-- 31 unit tests in generic mode, 35 with `grok-bot`, plus the fake-service
+- Unit tests (with synthetic mark geometry) plus the fake-service
   smoke test (Escape and Fn+F5 emit the right keys). On the laptop the
-  `grok-bot` build has run as the active renderer and reconnects after
+  default build has run as the active renderer and reconnects after
   service restarts.
 - The renderer cannot change the Touch Bar's own panel brightness; T1Bridge's
   brightness actions only reach the display and keyboard backlight.

@@ -13,8 +13,8 @@ This dedication does not replace anyone else's rights or licenses:
   [MIT license](touchbar-renderer/LICENSES/touchbar-client-MIT.txt). The bundled
   DejaVu Sans Bold font keeps its
   [license](touchbar-renderer/LICENSES/DejaVu-fonts-copyright.txt). Grok Bot
-  avatar artwork is not included; the optional integration builds only from
-  geometry generated locally from the user's own installed app.
+  avatar artwork is not included; t1-dash extracts the geometry at runtime
+  from the user's own installed app.
 - The source patch contains and modifies code from
   [T1Bridge](https://github.com/standardagents/t1bridge), pinned to v0.1.12,
   `81cbdf81026a16e02f0bea74735c6b029a8ffae2`. Its existing code remains under the
