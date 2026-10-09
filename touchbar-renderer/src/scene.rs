@@ -187,7 +187,7 @@ impl Scene {
                         let fill = marks.color(bot.color.as_deref(), &bot.id);
                         let shape = marks.shape_name(bot.shape.as_deref(), &bot.id);
                         let a = if *working { 1.0 } else { dim.max(0.9) };
-                        marks.draw(pm, shape, fill, Rgb(0, 0, 0), bx, cy, ms, &pose, a);
+                        if marks.draw_motion(pm, shape, &bot.id, *working, self.t, fill, Rgb(0, 0, 0), bx, cy, ms, a) { animating = true; } else { marks.draw(pm, shape, fill, Rgb(0, 0, 0), bx, cy, ms, &pose, a); }
                         // app sidebar markers: "blocked" (awaiting your response) wins over "unread"
                         if bot.blocked || bot.unread > 0 {
                             let (bxp, byp) = (bx + ms / 2.0 - 4.0, cy - ms / 2.0 + 5.0);
@@ -467,7 +467,7 @@ pub mod tests {
         s.bots.clear();
         s.activities = vec![crate::bots::Activity { name: "claude".into(), label: "Claude".into() }];
         let mut pm = Pixmap::new(s.width, s.height).unwrap();
-        let f = s.render(&mut pm, &Marks { center: 114.27, colors: Default::default(), shapes: Default::default() }, &mut Text::load(None));
+        let f = s.render(&mut pm, &Marks { motion: None, center: 114.27, colors: Default::default(), shapes: Default::default() }, &mut Text::load(None));
         assert!(!f.hits.iter().any(|(_, h)| matches!(h, Hit::Bot(_))));
         assert_eq!(hit_test(&f.hits, 30.0, 30.0), Some(Hit::Esc));
         assert!(f.animating);
@@ -478,7 +478,7 @@ pub mod tests {
         let mut s = sample_scene();
         s.controls = true;
         let mut pm = Pixmap::new(s.width, s.height).unwrap();
-        let f = s.render(&mut pm, &Marks { center: 114.27, colors: Default::default(), shapes: Default::default() }, &mut Text::load(None));
+        let f = s.render(&mut pm, &Marks { motion: None, center: 114.27, colors: Default::default(), shapes: Default::default() }, &mut Text::load(None));
         assert_eq!(hit_test(&f.hits, 30.0, 30.0), Some(Hit::CloseControls));
         assert_eq!(f.hits.iter().filter(|(_, h)| matches!(h, Hit::Ctl(_))).count(), 7);
     }

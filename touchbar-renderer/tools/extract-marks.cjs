@@ -26,12 +26,18 @@ const bundles = [];
     else if (/\.js$/.test(name) && !e.unpacked && e.size > 100000 && q.includes('renderer')) bundles.push([q, e]);
   }
 })(index, '');
+const readEntry = (e) => { const b = Buffer.alloc(e.size); fs.readSync(fd, b, 0, e.size, base + Number(e.offset)); return b.toString('utf8'); };
+const write = (out) => {
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  const tmp = outPath + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(out)); fs.renameSync(tmp, outPath);
+  console.log('extract-marks: wrote ' + outPath + ' (' + Object.keys(out.shapes).length + ' shapes, format ' + (out.format || 1) + ')');
+};
+(function main() {
 let src = null;
 for (const [, e] of bundles) {
-  const b = Buffer.alloc(e.size); fs.readSync(fd, b, 0, e.size, base + Number(e.offset));
-  const s = b.toString('utf8'); if (s.includes('black:{lightFrom:"#')) { src = s; break; }
+  const s = readEntry(e); if (s.includes('black:{lightFrom:"#') && s.includes('radial-gradient(115% 90%')) { src = s; break; }
 }
-if (!src) fail('mark module not found in ' + asarPath);
+if (!src) { motionFormat().catch((e) => fail(e.message)); return; }
 
 // --- cut the geometry module: from the color table to the end of the gradient helper ---
 const anchor = src.indexOf('black:{lightFrom:"#');
@@ -82,6 +88,81 @@ for (const s of SHAPES) {
   out.shapes[s] = e;
 }
 if (Object.keys(out.shapes).length < 10) fail('too few shapes extracted');
-fs.mkdirSync(path.dirname(outPath), { recursive: true });
-const tmp = outPath + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(out)); fs.renameSync(tmp, outPath);
-console.log('extract-marks: wrote ' + outPath + ' (' + Object.keys(out.shapes).length + ' shapes)');
+write(out);
+
+})();
+
+// ---------- newer app versions: "motion" marks (keyframed 3D bodies and eyes, split ES-module bundle) ----------
+// The app's own player is run headlessly and the 2D outlines it produces are sampled per frame, so the
+// bar shows the same idle and working motion as the app. Pieces are located by code shape, not names.
+async function motionFormat() {
+  const assets = [];
+  (function walk(node, p) {
+    for (const [name, e] of Object.entries(node.files || {})) {
+      const q = p ? p + '/' + name : name;
+      if (e.files) walk(e, q); else if (/\.js$/.test(name) && !e.unpacked && q.includes('renderer/assets/')) assets.push([name, e]);
+    }
+  })(index, '');
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-dash-marks-'));
+  try {
+    let chunk = null;
+    for (const [name, e] of assets) {
+      const code = readEntry(e).replace(/(from\s*|import\()"\.\/([^"]+)\.js"/g, '$1"./$2.mjs"');
+      fs.writeFileSync(path.join(tmpdir, name.replace(/\.js$/, '.mjs')), code);
+      if (code.includes('case"blob":return"sphere"')) chunk = name.replace(/\.js$/, '.mjs');
+    }
+    if (!chunk) throw new Error('mark module not found in ' + asarPath + ' (unknown Grok Bot avatar format)');
+    const code = fs.readFileSync(path.join(tmpdir, chunk), 'utf8');
+    const grab = (re, what) => { const m = code.match(re); if (!m) throw new Error('motion marks: ' + what + ' not recognized'); return m[1]; };
+    const player = grab(/\.current\?\?=([\w$]+)\(\{body:[\w$]+\}\)/, 'player');
+    const machine = grab(/\.current=([\w$]+)\([\w$]+,[\w$]+,\{seed:/, 'state machine');
+    const outline = grab(/for\(const [\w$]+ of ([\w$]+)\([\w$]+\([\w$]+\),[\w$]+,[\w$]+\)\.body\)/, 'outline');
+    const mapper = grab(/function ([\w$]+)\([\w$]+\)\{switch\([\w$]+\)\{case"blob":return"sphere"/, 'body mapper');
+    const shapeList = JSON.parse(grab(/(\["blob","pebble"[^\]]*\])/, 'shape list'));
+    const colors = new Function('return ' + grab(/=(\{black:\{light:"#[0-9A-Fa-f]{6}",dark:"#[0-9A-Fa-f]{6}"\}[^;]*?\}\})/, 'colors'))();
+    fs.writeFileSync(path.join(tmpdir, 'x.mjs'), code + `\nexport{${player} as __player,${machine} as __machine,${outline} as __outline,${mapper} as __mapper};`);
+    browserStubs();
+    const m = await import(path.join(tmpdir, 'x.mjs'));
+    const SIZE = 100, FPS = 15, SUB = 2; // simulate at 30 fps, keep every 2nd frame
+    const resample = (ring, n) => Array.from({ length: n }, (_, i) => {
+      const r = i / n * ring.length, k = Math.floor(r), f = r - k, a = ring[k % ring.length], b = ring[(k + 1) % ring.length];
+      const p = Array.isArray(a) ? a : [a.x, a.y], q = Array.isArray(b) ? b : [b.x, b.y];
+      return [Math.round((p[0] + (q[0] - p[0]) * f) * 10), Math.round((p[1] + (q[1] - p[1]) * f) * 10)];
+    }).flat();
+    const frames = [], seen = new Map();
+    const bake = (shape, state, seconds) => {
+      const body = m.__mapper(shape), O = m.__player({ body }), R = m.__machine(O, state, { seed: 1, isCompact: true, isResting: false });
+      const idx = [];
+      for (let i = 0; i < seconds * FPS * SUB; i++) {
+        R.advance(1 / (FPS * SUB)); O.advance(1 / (FPS * SUB));
+        if (i % SUB) continue;
+        const o = m.__outline(O.frame(), body, SIZE);
+        const fr = { b: o.body.map((r) => resample(r, 72)), e: o.eyes.map((r) => resample(r, 28)) };
+        const key = JSON.stringify(fr);
+        if (!seen.has(key)) { seen.set(key, frames.length); frames.push(fr); }
+        idx.push(seen.get(key));
+      }
+      return idx;
+    };
+    const out = { format: 2, size: SIZE, fps: FPS, scale: 10, colors, shapes: {}, frames };
+    for (const s of shapeList) out.shapes[s] = { idle: bake(s, 'idle', 4), working: bake(s, 'working', 16) };
+    write(out);
+  } finally { fs.rmSync(tmpdir, { recursive: true, force: true }); }
+}
+
+function browserStubs() {
+  const noop = () => {};
+  const g = globalThis;
+  const store = { getItem: () => null, setItem: noop, removeItem: noop };
+  Object.assign(g, {
+    window: g, self: g, addEventListener: noop, removeEventListener: noop,
+    matchMedia: () => ({ matches: false, addEventListener: noop, removeEventListener: noop, addListener: noop }),
+    localStorage: store, sessionStorage: store, requestAnimationFrame: noop, cancelAnimationFrame: noop,
+    location: { href: 'file:///', protocol: 'file:', search: '', hash: '', pathname: '/' },
+    HTMLElement: class {}, Element: class {}, Node: class {},
+    MutationObserver: class { observe() {} }, ResizeObserver: class { observe() {} }, IntersectionObserver: class { observe() {} },
+    getComputedStyle: () => ({ getPropertyValue: () => '' }), CSS: { supports: () => false },
+  });
+  g.document = { createElement: () => ({ style: {}, setAttribute: noop, appendChild: noop }), addEventListener: noop,
+    documentElement: { style: {} }, head: { appendChild: noop }, querySelector: () => null, querySelectorAll: () => [], hidden: false };
+}
