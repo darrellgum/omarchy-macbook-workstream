@@ -11,18 +11,45 @@ CPU (percent, temperature, sparkline), memory used/total, network sparkline,
 weather, battery (with a charging bolt) and date/time on the right. Holding Fn
 shows Escape plus F1 to F12. Colors follow the current Omarchy theme.
 
-![Normal layout with two activity entries](../assets/touchbar-renderer-normal.png)
+![t1-dash with the Tokyo Night theme](../assets/touchbar-renderer-normal-tokyo-night.png)
 
-![Generic activity widget](../assets/touchbar-renderer-generic-activity.png)
+## Gallery
+
+These frames come from the renderer's own drawing code, rendered headlessly at
+2x with sample data. The rounded frame is added for display.
+
+Tokyo Night, with two tools reporting activity:
+
+![Tokyo Night](../assets/touchbar-renderer-normal-tokyo-night.png)
+
+The bar follows the current Omarchy theme. Catppuccin, Gruvbox, Rose Pine,
+Everforest and Kanagawa:
+
+![Catppuccin](../assets/touchbar-renderer-normal-catppuccin.png)
+![Gruvbox](../assets/touchbar-renderer-normal-gruvbox.png)
+![Rose Pine](../assets/touchbar-renderer-normal-rose-pine.png)
+![Everforest](../assets/touchbar-renderer-normal-everforest.png)
+![Kanagawa](../assets/touchbar-renderer-normal-kanagawa.png)
+
+No activity, charger connected:
+
+![No activity, charging](../assets/touchbar-renderer-quiet-charging.png)
+
+Activity widget, animated:
+
+![Activity dots](../assets/touchbar-renderer-activity.webp)
+
+Holding Fn shows Escape and F1 to F12:
 
 ![Fn layer](../assets/touchbar-renderer-fn-layer.png)
 
-![Ambient mode while the screensaver runs](../assets/touchbar-renderer-ambient.png)
+During a Touch ID prompt, green chevrons sweep toward the sensor:
 
-![Touch ID prompt with the arrow toward the sensor](../assets/touchbar-renderer-touch-id.png)
+![Touch ID prompt](../assets/touchbar-renderer-touch-id.webp)
 
-*These are frames from the real drawing code rendered headlessly, not photos.
-The build box lacked the Nerd Font, so the weather icon shows as a box.*
+Ambient mode while the screensaver runs:
+
+![Ambient mode](../assets/touchbar-renderer-ambient.png)
 
 ## Why two renderers
 

@@ -34,6 +34,10 @@ need testing. The hardware foundation is [T1Bridge](https://github.com/standarda
 
 ## Workstream and t1-dash
 
+![t1-dash Touch Bar renderer with the Tokyo Night theme](assets/touchbar-renderer-normal-tokyo-night.png)
+
+*t1-dash, rendered from its drawing code with sample data. More in the [gallery](docs/touchbar-renderer.md#gallery).*
+
 Workstream was the first renderer here, an alpha to prove a custom Touch Bar
 was possible. [t1-dash](docs/touchbar-renderer.md) is the more polished take,
 built once the Touch Bar and Touch ID survived sleep ([S3 wake fixes](docs/sleep.md)).
