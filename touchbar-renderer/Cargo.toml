@@ -1,0 +1,26 @@
+[package]
+name = "t1-dash"
+version = "0.1.0"
+edition = "2021"
+description = "Custom T1Bridge Touch Bar renderer: Hyprland workspaces, Grok Bot marks, system pulse, clock"
+license = "CC0-1.0 AND MIT"
+
+[dependencies]
+libc = "0.2"
+tiny-skia = "0.11"
+fontdue = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+[features]
+default = []
+# Optional Grok Bot desktop integration: avatar marks, roster/unread/working state, tap-to-focus.
+# Needs assets/marks.json generated locally from your own installed app (not redistributed);
+# build.sh enables it automatically when that file exists.
+grok-bot = []
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

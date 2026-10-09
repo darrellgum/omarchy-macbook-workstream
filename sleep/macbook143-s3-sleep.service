@@ -1,0 +1,13 @@
+[Unit]
+Description=MacBookPro14,3 S3 prep and T1 wake (no-op outside KERNEL_GLOB)
+Before=sleep.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/macbook143-s3 pre
+ExecStop=/usr/local/sbin/macbook143-s3 post
+
+[Install]
+WantedBy=sleep.target

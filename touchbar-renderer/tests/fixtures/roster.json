@@ -1,0 +1,9 @@
+{"schemaVersion":1,"value":{"rows":[
+{"id":"00000000-0000-4000-8000-000000000001","name":"Atlas","avatarShape":"hex","avatarColor":"orange","isGroup":false},
+{"id":"00000000-0000-4000-8000-000000000002","name":"Bramble","avatarShape":"cloud","avatarColor":"magenta","isGroup":false},
+{"id":"00000000-0000-4000-8000-000000000003","name":"Cobalt","avatarShape":"pebble","avatarColor":"gray","isGroup":false},
+{"id":"00000000-0000-4000-8000-000000000004","name":"Dune","avatarShape":"teardrop","avatarColor":"black","isGroup":false},
+{"id":"00000000-0000-4000-8000-000000000005","name":"Group","avatarShape":null,"avatarColor":null,"isGroup":true},
+{"id":"00000000-0000-4000-8000-000000000006","name":"Echo 9000","avatarShape":"cloud","avatarColor":"violet","isGroup":false},
+{"id":"00000000-0000-4000-8000-000000000007","name":"Flint","avatarShape":"hex","avatarColor":"red","isGroup":false}
+]}}

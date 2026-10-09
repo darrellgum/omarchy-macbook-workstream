@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Optional Omarchy hook (copy to ~/.config/omarchy/hooks/theme-set.d/t1-dash).
+# t1-dash already polls colors.toml every second; this just makes the reload instant.
+pkill -USR1 -f 't1-dash|t1bridge/renderer' 2>/dev/null || true

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# touchbar-bot <bot-id|name-slug> working|idle  — atomically set a bot's Touch Bar activity.
+set -euo pipefail
+[[ $# -eq 2 && ( $2 == working || $2 == idle ) ]] || { echo "usage: touchbar-bot <bot-id> working|idle" >&2; exit 2; }
+[[ $1 =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad bot id" >&2; exit 2; }
+DIR=${XDG_STATE_HOME:-$HOME/.local/state}/touchbar/bots
+mkdir -p "$DIR"
+TMP=$(mktemp "$DIR/.$1.XXXXXX"); printf '%s\n' "$2" > "$TMP"; mv -f "$TMP" "$DIR/$1"

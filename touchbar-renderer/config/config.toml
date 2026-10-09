@@ -1,0 +1,55 @@
+# t1-dash config: ~/.config/touchbar/config.toml
+# Reloaded automatically (checked every second) or with: pkill -USR1 -f 't1-dash|t1bridge/renderer'
+
+# Left-to-right order. Remove an entry to hide it. "spacer" takes the leftover width.
+# Known widgets: esc, workspaces, bots, activity, spacer, pulse, weather, battery, clock
+#   bots     = Grok Bot avatar marks (only when the app is detected / enabled; build feature grok-bot)
+#   activity = generic: one pill per working entry in the status dir (any tool: Claude Code, Codex, scripts)
+layout = ["esc", "workspaces", "bots", "activity", "spacer", "pulse", "weather", "battery", "clock"]
+
+# font = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf"   # default; falls back to bundled DejaVu Sans Bold
+idle_fps = 15                 # idle bot blink/breathe loop
+activity_irqs = ["pxa2xx-spi", "i8042", "applespi"]  # /proc/interrupts names counted as keyboard/trackpad activity
+weather_refresh_secs = 900     # weather: same sources as the Omarchy bar widget (omarchy-weather-icon + wttr.in); cached in ~/.cache/t1-dash
+# weather_cmd = "..."          # override: command printing wttr.in j1 JSON or ICON|TEMP
+fps = 30                      # animation rate while something moves; static frames are only re-sent when they change
+
+[theme]
+# path = "~/.local/state/omarchy/current/theme/colors.toml"   # default (auto-detected; 3.x path also tried)
+
+[workspaces]
+min_count = 5                 # always show 1..N, plus any other existing workspace
+max_count = 10
+
+[bots]
+# enabled = true               # unset = auto-detect the Grok Bot app (~/.config/Grok Bot); false hides the bots widget
+# status_dir = "/absolute/path"   # default: ~/.local/state/touchbar/bots;  # files named <bot-id> (or name slug) containing working|idle
+# roster = ".../Grok Bot/sand-client-persistence/<roster>.blob" # default: auto-detected
+include = []                  # names or ids, in display order; empty = all bots in roster order
+exclude = []
+stale_after_secs = 900        # a 'working' file not touched for this long counts as idle (0 = never)
+mark_size = 52
+app_state = true              # unread/awaiting badges + working heuristic from the app's local roster/transcripts
+working_recent_secs = 45      # 'working' if the bot's transcript changed this recently or your last message is unanswered
+
+[pulse]
+cpu = true
+mem = true
+net = true
+width = 130                   # sparkline width per metric
+
+[clock]
+hour24 = true
+seconds = false
+date = true
+
+[ambient]
+enabled = true
+idle_secs = 300               # no touch / Hyprland activity for this long -> ambient wave (0 = off)
+on_screensaver = true         # ambient while org.omarchy.screensaver is open
+
+[oled]
+shift_secs = 120              # move all content one step along a small square every N seconds
+shift_px = 2
+dim_after_secs = 600          # dim static elements after this much idle
+dim_level = 0.8
