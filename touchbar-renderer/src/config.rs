@@ -27,6 +27,7 @@ pub struct Config {
     pub clock: ClockCfg,
     pub ambient: AmbientCfg,
     pub oled: OledCfg,
+    pub controls: ControlsCfg,
 }
 
 #[derive(Clone, Debug, Deserialize, Default)]
@@ -70,6 +71,43 @@ pub struct AmbientCfg { pub enabled: bool, pub idle_secs: u64, pub on_screensave
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
+pub struct ControlsCfg {
+    /// Double-tap Fn opens the controls layer; Esc or `timeout_secs` without a tap closes it.
+    pub enabled: bool,
+    pub timeout_secs: u64,
+    /// One shell command per button, run with sh -c. Empty string hides the button.
+    pub brightness_down: String, pub brightness_up: String,
+    pub kbd_down: String, pub kbd_up: String,
+    pub mute: String, pub volume_down: String, pub volume_up: String,
+}
+
+impl Default for ControlsCfg {
+    fn default() -> Self {
+        let osd = |a: &str, b: &str| format!("command -v swayosd-client >/dev/null && swayosd-client {a} || {b}");
+        ControlsCfg {
+            enabled: true, timeout_secs: 5,
+            brightness_down: osd("--brightness lower", "brightnessctl -q -c backlight set 5%-"),
+            brightness_up: osd("--brightness raise", "brightnessctl -q -c backlight set +5%"),
+            kbd_down: "brightnessctl -q -d '*kbd_backlight*' set 10%-".into(),
+            kbd_up: "brightnessctl -q -d '*kbd_backlight*' set +10%".into(),
+            mute: osd("--output-volume mute-toggle", "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"),
+            volume_down: osd("--output-volume lower", "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"),
+            volume_up: osd("--output-volume raise", "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+"),
+        }
+    }
+}
+
+impl ControlsCfg {
+    /// (label, command) for each visible button, in order.
+    pub fn buttons(&self) -> Vec<(&'static str, &str)> {
+        [("BRIGHT -", &self.brightness_down), ("BRIGHT +", &self.brightness_up), ("KEYS -", &self.kbd_down), ("KEYS +", &self.kbd_up),
+         ("MUTE", &self.mute), ("VOL -", &self.volume_down), ("VOL +", &self.volume_up)]
+            .into_iter().filter(|(_, c)| !c.trim().is_empty()).map(|(l, c)| (l, c.as_str())).collect()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
 pub struct OledCfg { pub shift_secs: u64, pub shift_px: u32, pub dim_after_secs: u64, pub dim_level: f32 }
 
 impl Default for Config {
@@ -90,6 +128,7 @@ impl Default for Config {
             clock: ClockCfg::default(),
             ambient: AmbientCfg::default(),
             oled: OledCfg::default(),
+            controls: ControlsCfg::default(),
         }
     }
 }

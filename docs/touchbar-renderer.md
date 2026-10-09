@@ -81,8 +81,19 @@ repository; use whichever you prefer.
 - **OLED care:** content shifts a few pixels every few minutes; after 10
   minutes without touch, keyboard, trackpad or Hyprland activity the bar dims
   to 80% and later shows a slow ambient wave. Activity restores it.
+- **Controls layer:** double-tap Fn to open a hidden row with display
+  brightness, keyboard backlight and volume buttons (holding Fn still shows
+  F1 to F12). Tap esc, or wait 5 seconds, to close it. Each button runs a
+  shell command from `[controls]` in the config; the defaults use
+  swayosd-client when it is installed, otherwise brightnessctl and wpctl.
 - **Config:** `~/.config/touchbar/config.toml` sets widget order and toggles.
   `config/config.toml` is the documented example. `SIGUSR1` reloads it.
+
+## T2 MacBooks
+
+T2 models have no T1Bridge, so t1-dash ships a small root bridge,
+`t1-dash-t2d`, that speaks the same renderer protocol. See
+[T2 setup](touchbar-t2.md).
 
 ## Optional Grok Bot integration
 

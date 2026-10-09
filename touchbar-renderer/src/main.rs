@@ -77,7 +77,7 @@ impl Live {
             scene: Scene {
                 width, height, cfg, theme: theme::Theme::default(), bots: vec![], workspaces: vec![], active_ws: 1,
                 cpu: vec![], mem: vec![], net: vec![], activities: vec![], net_rate: 0.0, mem_gib: 0.0, mem_total_gib: 0.0, cpu_temp: None, weather: None, battery: Default::default(),
-                time: LocalTime::now(), fn_pressed: false, ambient: false, idle_secs: 0.0, t: 0.0, unix_secs: 0, touch_id: None, pressed: None,
+                time: LocalTime::now(), fn_pressed: false, controls: false, ambient: false, idle_secs: 0.0, t: 0.0, unix_secs: 0, touch_id: None, pressed: None,
             },
             hypr_rx: rx, screensaver: false, last_activity: now, wake_until: None, started: now, last_sample: now - Duration::from_secs(2), irq_total: 0, theme_text: String::new(), replicas: Default::default(), replica_state: Default::default(), persistence_dir: config_home().join("Grok Bot/sand-client-persistence"), weather: Default::default(),
         };
@@ -337,8 +337,21 @@ fn session(client: &mut Client, live: &mut Live) -> Result<(), ClientError> {
     let mut animating = false;
     let mut idle_anim = false;
     let mut last_sec = 0u64;
+    let mut fn_raw = false;
+    let mut last_fn_tap: Option<Instant> = None;
+    let mut controls_since = Instant::now();
+    let mut shown_controls = false;
     loop {
         if STOP.load(Ordering::SeqCst) { return Ok(()); }
+        if live.scene.controls && controls_since.elapsed() >= Duration::from_secs(live.scene.cfg.controls.timeout_secs.max(1)) {
+            live.scene.controls = false;
+        }
+        if live.scene.controls != shown_controls {
+            shown_controls = live.scene.controls;
+            live.scene.fn_pressed = fn_raw && !live.scene.controls;
+            hits = live.scene.render(&mut pm, &live.marks, &mut live.text).hits;
+            dirty = true;
+        }
         dirty |= live.poll_sources();
         let fps = live.scene.cfg.fps.clamp(1, 60);
         let frame_dt = Duration::from_secs_f32(1.0 / if live.scene.ambient { (fps / 2).max(1) } else { fps } as f32);
@@ -359,8 +372,22 @@ fn session(client: &mut Client, live: &mut Live) -> Result<(), ClientError> {
         while let Some(ev) = client.receive()? {
             let Event::Input(input) = ev else { continue };
             live.touch();
-            if input.fn_pressed != live.scene.fn_pressed {
-                live.scene.fn_pressed = input.fn_pressed;
+            if input.fn_pressed != fn_raw {
+                fn_raw = input.fn_pressed;
+                if fn_raw {
+                    // double-tap Fn (two presses within 400 ms) toggles the hidden controls layer
+                    let now = Instant::now();
+                    if live.scene.cfg.controls.enabled && last_fn_tap.is_some_and(|t| now.duration_since(t) < Duration::from_millis(400)) {
+                        live.scene.controls = !live.scene.controls;
+                        controls_since = now;
+                        last_fn_tap = None;
+                    } else { last_fn_tap = Some(now); }
+                }
+            }
+            let want_fn = fn_raw && !live.scene.controls;
+            if want_fn != live.scene.fn_pressed || live.scene.controls != shown_controls {
+                shown_controls = live.scene.controls;
+                live.scene.fn_pressed = want_fn;
                 // refresh hit regions for the new layer before handling touches in this frame
                 hits = live.scene.render(&mut pm, &live.marks, &mut live.text).hits;
                 dirty = true;
@@ -372,7 +399,12 @@ fn session(client: &mut Client, live: &mut Live) -> Result<(), ClientError> {
                 dirty = true;
                 match hit {
                     Hit::Esc => client.tap_keys(&[Key::Escape])?,
-                    Hit::FKey(i) => client.tap_keys(&[FKEY_CODES[i]])?,
+                    Hit::FKey(i) => { last_fn_tap = None; client.tap_keys(&[FKEY_CODES[i]])? }
+                    Hit::CloseControls => { live.scene.controls = false; }
+                    Hit::Ctl(i) => {
+                        controls_since = Instant::now();
+                        if let Some((_, cmd)) = live.scene.cfg.controls.buttons().get(i) { run_cmd(cmd); }
+                    }
                     Hit::Workspace(n) => hypr::switch_workspace(n),
                     Hit::CancelTouchId => client.cancel_touch_id()?,
                     Hit::WakeAmbient => { live.wake_until = Some(Instant::now() + Duration::from_secs(15)); live.scene.ambient = false; }
@@ -385,6 +417,14 @@ fn session(client: &mut Client, live: &mut Live) -> Result<(), ClientError> {
             if now_down.is_empty() && live.scene.pressed.is_some() { live.scene.pressed = None; dirty = true; }
             down = now_down;
         }
+    }
+}
+
+/// Run a control command in the background; output is discarded, the child is reaped by a thread.
+fn run_cmd(cmd: &str) {
+    if let Ok(mut c) = std::process::Command::new("sh").arg("-c").arg(cmd)
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn() {
+        std::thread::spawn(move || { let _ = c.wait(); });
     }
 }
 

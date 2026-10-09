@@ -11,7 +11,7 @@ use tiny_skia::{PathBuilder, Pixmap};
 pub const FKEYS: [&str; 13] = ["esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Hit { Esc, FKey(usize), Workspace(i64), Bot(usize), WakeAmbient, CancelTouchId }
+pub enum Hit { Esc, FKey(usize), Ctl(usize), CloseControls, Workspace(i64), Bot(usize), WakeAmbient, CancelTouchId }
 
 #[derive(Clone, Debug, Default)]
 pub struct LocalTime { pub hour: u32, pub min: u32, pub sec: u32, pub wday: u32, pub mday: u32, pub mon: u32 }
@@ -48,6 +48,8 @@ pub struct Scene {
     pub battery: Battery,
     pub time: LocalTime,
     pub fn_pressed: bool,
+    /// hidden controls layer (double-tap Fn)
+    pub controls: bool,
     pub ambient: bool,
     /// seconds since last touch / desktop activity
     pub idle_secs: f32,
@@ -105,6 +107,7 @@ impl Scene {
         pm.fill(tiny_skia::Color::BLACK);
         let mut hits = Vec::new();
         if let Some(tid) = &self.touch_id { self.render_touch_id(pm, text, tid, &mut hits); return Frame { hits, animating: true, idle_anim: false }; }
+        if self.controls { self.render_controls(pm, text, &mut hits); return Frame { hits, animating: false, idle_anim: false }; }
         if self.fn_pressed { self.render_fn(pm, text, &mut hits); return Frame { hits, animating: false, idle_anim: false }; }
         if self.ambient { self.render_ambient(pm, text, &mut hits); return Frame { hits, animating: true, idle_anim: false }; }
 
@@ -287,6 +290,30 @@ impl Scene {
         }
     }
 
+    fn render_controls(&self, pm: &mut Pixmap, text: &mut Text, hits: &mut Vec<([f32; 4], Hit)>) {
+        let th = &brighten(&self.theme);
+        let h = self.height as f32;
+        let (gap, esc_w, key_w) = (8.0, 100.0, 150.0);
+        let mut x = 8.0;
+        let pressed = self.pressed == Some(Hit::CloseControls);
+        draw::rrect(pm, x, h / 2.0 - 27.0, esc_w, 54.0, 9.0, if pressed { th.accent } else { th.selection }, 1.0);
+        text.draw_centered(pm, "esc", x + esc_w / 2.0, h / 2.0, 28.0, if pressed { th.background } else { th.bright_foreground }, 1.0);
+        hits.push(([0.0, 0.0, x + esc_w + gap / 2.0, h], Hit::CloseControls));
+        x += esc_w + gap * 3.0;
+        let mut group = "";
+        for (i, (label, _)) in self.cfg.controls.buttons().iter().enumerate() {
+            let g = label.split(' ').next().unwrap_or("");
+            if !group.is_empty() && g != group { x += gap * 3.0; }
+            group = g;
+            let p = self.pressed == Some(Hit::Ctl(i));
+            draw::rrect(pm, x, h / 2.0 - 27.0, key_w, 54.0, 9.0, if p { th.accent } else { th.selection }, 1.0);
+            if !p { draw::rrect_stroke(pm, x + 0.5, h / 2.0 - 26.5, key_w - 1.0, 53.0, 9.0, th.muted, 1.0, 1.5); }
+            text.draw_centered(pm, label, x + key_w / 2.0, h / 2.0, 24.0, if p { th.background } else { th.bright_foreground }, 1.0);
+            hits.push(([x - gap / 2.0, 0.0, key_w + gap, h], Hit::Ctl(i)));
+            x += key_w + gap;
+        }
+    }
+
     fn render_ambient(&self, pm: &mut Pixmap, text: &mut Text, hits: &mut Vec<([f32; 4], Hit)>) {
         let th = &self.theme;
         let (w, h) = (self.width as usize, self.height as usize);
@@ -404,7 +431,7 @@ pub mod tests {
             net_rate: 2.4 * 1048576.0, mem_gib: 5.1, mem_total_gib: 16.0, cpu_temp: Some(64.0), weather: Some(("\u{e30d}".into(), "62°F".into())),
             battery: Battery { percent: 74, charging: false, present: true, on_ac: false },
             time: LocalTime { hour: 14, min: 12, sec: 5, wday: 5, mday: 9, mon: 9 },
-            fn_pressed: false, ambient: false, idle_secs: 0.0, t: 3.0, unix_secs: 0, touch_id: None, pressed: None,
+            fn_pressed: false, controls: false, ambient: false, idle_secs: 0.0, t: 3.0, unix_secs: 0, touch_id: None, pressed: None,
         }
     }
 
@@ -445,6 +472,16 @@ pub mod tests {
         assert!(!f.hits.iter().any(|(_, h)| matches!(h, Hit::Bot(_))));
         assert_eq!(hit_test(&f.hits, 30.0, 30.0), Some(Hit::Esc));
         assert!(f.animating);
+    }
+
+    #[test]
+    fn controls_layer_has_buttons_and_close() {
+        let mut s = sample_scene();
+        s.controls = true;
+        let mut pm = Pixmap::new(s.width, s.height).unwrap();
+        let f = s.render(&mut pm, &Marks { center: 114.27, colors: Default::default(), shapes: Default::default() }, &mut Text::load(None));
+        assert_eq!(hit_test(&f.hits, 30.0, 30.0), Some(Hit::CloseControls));
+        assert_eq!(f.hits.iter().filter(|(_, h)| matches!(h, Hit::Ctl(_))).count(), 7);
     }
 
     #[test]

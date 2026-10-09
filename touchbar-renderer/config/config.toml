@@ -53,3 +53,17 @@ shift_secs = 120              # move all content one step along a small square e
 shift_px = 2
 dim_after_secs = 600          # dim static elements after this much idle
 dim_level = 0.8
+
+[controls]
+# Hidden layer: double-tap Fn to open, tap esc (or wait timeout_secs) to close. Holding Fn still shows F1-F12.
+enabled = true
+timeout_secs = 5
+# Each button runs a shell command. Set one to "" to hide it. Defaults use swayosd-client when present,
+# else brightnessctl / wpctl:
+# brightness_down = "brightnessctl -q -c backlight set 5%-"
+# brightness_up   = "brightnessctl -q -c backlight set +5%"
+# kbd_down        = "brightnessctl -q -d '*kbd_backlight*' set 10%-"
+# kbd_up          = "brightnessctl -q -d '*kbd_backlight*' set +10%"
+# mute            = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+# volume_down     = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
+# volume_up       = "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+"
