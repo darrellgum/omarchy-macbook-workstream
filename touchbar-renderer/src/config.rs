@@ -86,15 +86,31 @@ pub struct ControlsCfg {
     pub mute: String, pub volume_down: String, pub volume_up: String,
 }
 
+/// Main display backlight. On T2 Macs /sys/class/backlight also holds the Touch Bar's own
+/// `appletb_backlight`, which `-c backlight` can pick, so name the device explicitly.
+fn screen_dev() -> String {
+    let mut names: Vec<String> = std::fs::read_dir("/sys/class/backlight").into_iter().flatten().flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| !n.starts_with("appletb")).collect();
+    names.sort_by_key(|n| (!n.starts_with("intel") && !n.starts_with("amdgpu") && !n.starts_with("nvidia"), !n.starts_with("acpi"), n.clone()));
+    names.first().map(|n| format!("-d '{n}'")).unwrap_or_else(|| "-c backlight".into())
+}
+
+/// Keyboard backlight LED (e.g. `:white:kbd_backlight` on T2, `smc::kbd_backlight` on T1).
+fn kbd_dev() -> String {
+    std::fs::read_dir("/sys/class/leds").into_iter().flatten().flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned()).find(|n| n.ends_with("kbd_backlight"))
+        .map(|n| format!("-d '{n}'")).unwrap_or_else(|| "-d '*kbd_backlight*'".into())
+}
+
 impl Default for ControlsCfg {
     fn default() -> Self {
         let osd = |a: &str, b: &str| format!("command -v swayosd-client >/dev/null && swayosd-client {a} || {b}");
         ControlsCfg {
             enabled: true, timeout_secs: 5,
-            brightness_down: osd("--brightness lower", "brightnessctl -q -c backlight set 5%-"),
-            brightness_up: osd("--brightness raise", "brightnessctl -q -c backlight set +5%"),
-            kbd_down: "brightnessctl -q -d '*kbd_backlight*' set 10%-".into(),
-            kbd_up: "brightnessctl -q -d '*kbd_backlight*' set +10%".into(),
+            brightness_down: osd("--brightness lower", &format!("brightnessctl -q {} set 5%-", screen_dev())),
+            brightness_up: osd("--brightness raise", &format!("brightnessctl -q {} set +5%", screen_dev())),
+            kbd_down: format!("brightnessctl -q {} set 10%-", kbd_dev()),
+            kbd_up: format!("brightnessctl -q {} set +10%", kbd_dev()),
             mute: osd("--output-volume mute-toggle", "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"),
             volume_down: osd("--output-volume lower", "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"),
             volume_up: osd("--output-volume raise", "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+"),

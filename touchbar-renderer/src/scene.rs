@@ -30,6 +30,8 @@ impl LocalTime {
 #[derive(Clone, Debug, PartialEq)]
 pub enum TouchId { Authenticate, Approve, Retry, Success, Enrollment(u8) }
 
+struct Fit { cpu: bool, mem: bool, net: bool, weather: bool }
+
 pub struct Scene {
     pub width: u32,
     pub height: u32,
@@ -88,15 +90,29 @@ impl Scene {
         ids
     }
 
-    fn widget_width(&self, name: &str) -> f32 {
+    /// What fits: on narrow panels (T2 is 2008 px) the least important bits are dropped
+    /// in this order: NET, weather, MEM, CPU, so the clock always stays fully visible.
+    fn fit(&self, layout: &[&str]) -> Fit {
+        let p = &self.cfg.pulse;
+        let mut f = Fit { cpu: p.cpu, mem: p.mem, net: p.net, weather: true };
+        let avail = self.width as f32 - 16.0 - 4.0 * self.cfg.oled.shift_px as f32;
+        let total = |f: &Fit| layout.iter().map(|w| self.widget_width(w, f)).sum::<f32>();
+        for step in 0..4 {
+            if total(&f) <= avail { break; }
+            match step { 0 => f.net = false, 1 => f.weather = false, 2 => f.mem = false, _ => f.cpu = false }
+        }
+        f
+    }
+
+    fn widget_width(&self, name: &str, fit: &Fit) -> f32 {
         let ms = self.cfg.bots.mark_size as f32;
         match name {
             "esc" => 116.0,
             "workspaces" => self.workspace_ids().len() as f32 * 66.0 + 18.0,
             "activity" => if self.activities.is_empty() { 0.0 } else { self.activities.iter().map(|a| 70.0 + a.label.chars().count() as f32 * 13.0).sum::<f32>() + 14.0 },
             "bots" => if self.bots.is_empty() { 0.0 } else { self.bots.len() as f32 * (ms + 14.0) + 22.0 },
-            "pulse" => { let p = &self.cfg.pulse; let pw = p.width as f32; 14.0 + if p.cpu { 136.0 + pw } else { 0.0 } + if p.mem { 132.0 } else { 0.0 } + if p.net { 104.0 + pw + 6.0 } else { 0.0 } }
-            "weather" => if self.weather.is_some() { 128.0 } else { 0.0 },
+            "pulse" => { let p = fit; let pw = self.cfg.pulse.width as f32; if !(p.cpu || p.mem || p.net) { 0.0 } else { 14.0 + if p.cpu { 136.0 + pw } else { 0.0 } + if p.mem { 132.0 } else { 0.0 } + if p.net { 104.0 + pw + 6.0 } else { 0.0 } } }
+            "weather" => if self.weather.is_some() && fit.weather { 128.0 } else { 0.0 },
             "battery" => if self.battery.present { 132.0 } else { 0.0 },
             "clock" => 262.0,
             _ => 0.0,
@@ -121,13 +137,14 @@ impl Scene {
         let mut animating = false;
 
         let layout: Vec<&str> = self.cfg.layout.iter().map(String::as_str).collect();
-        let fixed: f32 = layout.iter().map(|w| self.widget_width(w)).sum();
+        let fit = self.fit(&layout);
+        let fixed: f32 = layout.iter().map(|w| self.widget_width(w, &fit)).sum();
         let spacers = layout.iter().filter(|w| **w == "spacer").count().max(1) as f32;
         let spacer_w = ((self.width as f32 - 16.0 - fixed) / spacers).max(0.0);
         let mut x = 8.0 + ox;
         let mut prev_drawn = false;
         for name in layout {
-            let w = if name == "spacer" { spacer_w } else { self.widget_width(name) };
+            let w = if name == "spacer" { spacer_w } else { self.widget_width(name, &fit) };
             if w <= 0.0 { continue; }
             if name != "spacer" && prev_drawn && matches!(name, "bots" | "activity" | "pulse") {
                 draw::rect(pm, x, cy - 20.0, 1.5, 40.0, th.muted, dim);
@@ -206,7 +223,7 @@ impl Scene {
                     let pw = self.cfg.pulse.width as f32;
                     let mut sx = x + 14.0;
                     let (lp, vp) = (18.0, 26.0);
-                    if self.cfg.pulse.cpu {
+                    if fit.cpu {
                         text.draw(pm, "CPU", sx, cy - 14.0, lp, th.cyan, dim);
                         let v = format!("{:.0}%", self.cpu.last().copied().unwrap_or(0.0) * 100.0);
                         let vw = text.draw(pm, &v, sx, cy + 12.0, vp, th.bright_foreground, dim);
@@ -217,14 +234,14 @@ impl Scene {
                         draw::sparkline(pm, &self.cpu, sysmon::HISTORY, sx + 124.0, cy - 25.0, pw, 50.0, th.cyan, dim.max(0.9));
                         sx += 128.0 + pw + 8.0;
                     }
-                    if self.cfg.pulse.mem {
+                    if fit.mem {
                         text.draw(pm, "MEM", sx, cy - 14.0, lp, th.magenta, dim);
                         let used = format!("{:.1}", self.mem_gib);
                         let uw = text.draw(pm, &used, sx, cy + 12.0, vp, th.bright_foreground, dim);
                         text.draw(pm, &format!("/{:.0}G", self.mem_total_gib.round()), sx + uw, cy + 12.0, vp * 0.75, th.foreground, dim);
                         sx += 132.0;
                     }
-                    if self.cfg.pulse.net {
+                    if fit.net {
                         text.draw(pm, "NET", sx, cy - 14.0, lp, th.green, dim);
                         text.draw(pm, &sysmon::human_rate(self.net_rate), sx, cy + 12.0, vp, th.bright_foreground, dim);
                         draw::sparkline(pm, &self.net, sysmon::HISTORY, sx + 98.0, cy - 25.0, pw, 50.0, th.green, dim.max(0.9));
@@ -471,6 +488,20 @@ pub mod tests {
         assert!(!f.hits.iter().any(|(_, h)| matches!(h, Hit::Bot(_))));
         assert_eq!(hit_test(&f.hits, 30.0, 30.0), Some(Hit::Esc));
         assert!(f.animating);
+    }
+
+    #[test]
+    fn narrow_panel_keeps_clock_visible() {
+        let mut s = sample_scene();
+        s.width = 2008;
+        let layout: Vec<&str> = s.cfg.layout.iter().map(String::as_str).collect();
+        let f = s.fit(&layout);
+        let total: f32 = layout.iter().map(|w| s.widget_width(w, &f)).sum();
+        assert!(total <= 2008.0 - 16.0, "{total}");
+        assert!(f.cpu, "CPU kept");
+        s.width = 2170;
+        let f = s.fit(&layout);
+        assert!(f.net && f.mem && f.cpu);
     }
 
     #[test]

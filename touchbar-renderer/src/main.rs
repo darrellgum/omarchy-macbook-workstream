@@ -420,10 +420,30 @@ fn session(client: &mut Client, live: &mut Live) -> Result<(), ClientError> {
 
 /// Run a control command in the background; output is discarded, the child is reaped by a thread.
 fn run_cmd(cmd: &str) {
-    if let Ok(mut c) = std::process::Command::new("sh").arg("-c").arg(cmd)
-        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn() {
-        std::thread::spawn(move || { let _ = c.wait(); });
-    }
+    let cmd = cmd.to_string();
+    std::thread::spawn(move || {
+        match std::process::Command::new("sh").arg("-c").arg(&cmd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).output() {
+            Ok(o) if !o.status.success() => eprintln!("t1-dash: control failed ({}): {cmd}: {}", o.status, String::from_utf8_lossy(&o.stderr).trim()),
+            Err(e) => eprintln!("t1-dash: control failed: {cmd}: {e}"),
+            _ => {}
+        }
+    });
+}
+
+/// `t1-dash control <button>` runs a controls-layer button exactly as a tap would (for testing / key binds).
+fn control_cli(name: &str) -> i32 {
+    let cfg_path = std::env::var_os("T1_DASH_CONFIG").map(PathBuf::from).unwrap_or_else(|| config_home().join("touchbar/config.toml"));
+    let cfg = std::fs::read_to_string(&cfg_path).ok().and_then(|t| config::Config::parse(&t).ok()).unwrap_or_default();
+    let want = name.to_ascii_lowercase().replace(['_', '-', ' '], "");
+    let c = &cfg.controls;
+    let cmd = match want.as_str() {
+        "brightnessdown" => &c.brightness_down, "brightnessup" => &c.brightness_up,
+        "kbddown" => &c.kbd_down, "kbdup" => &c.kbd_up, "mute" => &c.mute,
+        "volumedown" => &c.volume_down, "volumeup" => &c.volume_up,
+        _ => { eprintln!("usage: t1-dash control brightness_down|brightness_up|kbd_down|kbd_up|mute|volume_down|volume_up"); return 2; }
+    };
+    println!("{cmd}");
+    std::process::Command::new("sh").arg("-c").arg(cmd).status().map(|s| s.code().unwrap_or(1)).unwrap_or(1)
 }
 
 fn hash(b: &[u8]) -> u64 {
@@ -457,6 +477,7 @@ fn main() {
             let h = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(60);
             dump(&out, w, h)
         }
+        Some("control") => std::process::exit(control_cli(args.get(2).map(String::as_str).unwrap_or(""))),
         Some("bots") => std::process::exit(bots_cli(&args[2..])),
         Some("--version") => println!("t1-dash {}", env!("CARGO_PKG_VERSION")),
         Some(_) => { eprintln!("usage: t1-dash [run | bots [show|hide NAME] | preview DIR | dump OUT.png [W H] | --version]"); std::process::exit(2) }
