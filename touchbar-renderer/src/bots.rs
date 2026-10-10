@@ -80,13 +80,17 @@ pub fn pending_user_message(replica_json: &str) -> Option<u64> {
     None
 }
 
-pub fn select(bots: Vec<Bot>, include: &[String], exclude: &[String]) -> Vec<Bot> {
-    let m = |b: &Bot, l: &[String]| l.iter().any(|x| x.eq_ignore_ascii_case(&b.id) || x.eq_ignore_ascii_case(&b.name));
-    let mut v: Vec<Bot> = bots.into_iter().filter(|b| !m(b, exclude)).collect();
-    if !include.is_empty() {
-        v.retain(|b| m(b, include));
-        v.sort_by_key(|b| include.iter().position(|x| x.eq_ignore_ascii_case(&b.id) || x.eq_ignore_ascii_case(&b.name)));
+pub fn matches(b: &Bot, x: &str) -> bool { x.trim().eq_ignore_ascii_case(&b.id) || x.trim().eq_ignore_ascii_case(b.name.trim()) }
+
+/// Applies [bots] show / hide / order. `show` non-empty = only those, in that order.
+pub fn select(bots: Vec<Bot>, show: &[String], hide: &[String], order: &[String]) -> Vec<Bot> {
+    let pos = |b: &Bot, l: &[String]| l.iter().position(|x| matches(b, x));
+    let mut v: Vec<Bot> = bots.into_iter().filter(|b| pos(b, hide).is_none()).collect();
+    if !show.is_empty() {
+        v.retain(|b| pos(b, show).is_some());
+        v.sort_by_key(|b| pos(b, show));
     }
+    if !order.is_empty() { v.sort_by_key(|b| pos(b, order).unwrap_or(usize::MAX)); }
     v
 }
 
@@ -137,6 +141,20 @@ pub fn is_working(dir: &Path, bot: &Bot, stale_after: u64, now: SystemTime) -> b
 }
 
 #[cfg(test)]
+mod select_tests {
+    use super::*;
+    fn b(id: &str, name: &str) -> Bot { Bot { id: id.into(), name: name.into(), shape: None, color: None, unread: 0, blocked: false } }
+    #[test]
+    fn show_hide_order() {
+        let all = vec![b("1", "Reed"), b("2", "Scout"), b("3", "KALE 9000")];
+        let names = |v: Vec<Bot>| v.into_iter().map(|b| b.name).collect::<Vec<_>>();
+        assert_eq!(names(select(all.clone(), &[], &["scout".into()], &[])), ["Reed", "KALE 9000"]);
+        assert_eq!(names(select(all.clone(), &["kale 9000".into(), "1".into()], &[], &[])), ["KALE 9000", "Reed"]);
+        assert_eq!(names(select(all.clone(), &[], &[], &["Scout".into()])), ["Scout", "Reed", "KALE 9000"]);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
@@ -145,9 +163,9 @@ mod tests {
         assert_eq!(b.len(), 6);
         assert_eq!(b[0].name, "Atlas");
         assert_eq!(b[0].shape.as_deref(), Some("hex"));
-        let s = select(b.clone(), &["echo 9000".into(), "Atlas".into()], &[]);
+        let s = select(b.clone(), &["echo 9000".into(), "Atlas".into()], &[], &[]);
         assert_eq!(s.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), ["Echo 9000", "Atlas"]);
-        assert_eq!(select(b, &[], &["Dune".into()]).len(), 5);
+        assert_eq!(select(b, &[], &["Dune".into()], &[]).len(), 5);
     }
     #[test]
     fn roster_markers_and_pending() {

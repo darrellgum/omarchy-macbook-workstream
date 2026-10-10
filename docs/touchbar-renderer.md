@@ -99,10 +99,21 @@ T2 models have no T1Bridge, so t1-dash ships a small root bridge,
 
 When the Grok Bot desktop app is installed, the bar also shows its agents as
 their avatar marks, with the app's idle and working animations, its unread
-count and "awaiting you" badge, and tap to focus the app. It reads the app's
-local roster file read-only and makes no network calls. `bots.enabled` in the
-config forces it on or off; unset, it turns on when the app's data directory
-exists.
+count and "awaiting you" badge. Tapping a mark opens that bot's conversation
+through the app's `grokbot://app/v1/agent?id=` link on app builds that support
+it, then focuses the window; older builds are just focused. It never types into
+the app. It reads the app's local roster file read-only and makes no network
+calls. `bots.enabled` in the config forces it on or off; unset, it turns on when
+the app's data directory exists.
+
+Pick which bots appear with `show`, `hide` and `order` under `[bots]` (names,
+case-insensitive, or ids), or from a terminal:
+
+    t1-dash bots              # list bots with on/off
+    t1-dash bots hide Scout
+    t1-dash bots show Scout
+
+The running bar picks up config changes within a second.
 
 The avatar artwork belongs to the app and is not included. On start, t1-dash
 extracts the mark geometry from the locally installed app into

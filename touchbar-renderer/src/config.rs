@@ -45,9 +45,14 @@ pub struct BotsCfg {
     pub enabled: Option<bool>,
     pub status_dir: Option<PathBuf>,
     pub roster: Option<PathBuf>,
-    /// Bot names or ids to show (empty = all non-group bots in roster order).
-    pub include: Vec<String>,
-    pub exclude: Vec<String>,
+    /// Bot names (case-insensitive) or ids to show, in display order (empty = all bots in roster order).
+    #[serde(alias = "include")]
+    pub show: Vec<String>,
+    /// Bot names or ids to hide.
+    #[serde(alias = "exclude")]
+    pub hide: Vec<String>,
+    /// Names or ids drawn first, in this order; the rest follow in roster order.
+    pub order: Vec<String>,
     /// A 'working' file older than this is treated as idle (0 = never).
     pub stale_after_secs: u64,
     pub mark_size: u32,
@@ -134,7 +139,7 @@ impl Default for Config {
 }
 impl Default for WorkspacesCfg { fn default() -> Self { Self { min_count: 5, max_count: 10 } } }
 impl Default for BotsCfg {
-    fn default() -> Self { Self { enabled: None, status_dir: None, roster: None, include: vec![], exclude: vec![], stale_after_secs: 900, mark_size: 52, app_state: true, working_recent_secs: 45 } }
+    fn default() -> Self { Self { enabled: None, status_dir: None, roster: None, show: vec![], hide: vec![], order: vec![], stale_after_secs: 900, mark_size: 52, app_state: true, working_recent_secs: 45 } }
 }
 impl Default for PulseCfg { fn default() -> Self { Self { cpu: true, mem: true, net: true, width: 130 } } }
 impl Default for ClockCfg { fn default() -> Self { Self { hour24: true, seconds: false, date: true } } }
@@ -172,5 +177,41 @@ mod tests {
         assert_eq!(c.bots.mark_size, 52);
         assert_eq!(c.bots.enabled, None);
         assert_eq!(Config::parse("[bots]\nenabled=false\n").unwrap().bots.enabled, Some(false));
+    }
+}
+
+/// Rewrites `show` / `hide` under [bots] in config text, keeping everything else (comments included).
+pub fn set_bots_lists(text: &str, show: &[String], hide: &[String]) -> String {
+    let fmt = |k: &str, l: &[String]| format!("{k} = [{}]", l.iter().map(|x| format!("{:?}", x)).collect::<Vec<_>>().join(", "));
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    let start = lines.iter().position(|l| l.trim() == "[bots]");
+    let start = match start { Some(i) => i, None => { if !lines.is_empty() { lines.push(String::new()); } lines.push("[bots]".into()); lines.len() - 1 } };
+    let end = lines.iter().enumerate().skip(start + 1).find(|(_, l)| l.trim_start().starts_with('[')).map(|(i, _)| i).unwrap_or(lines.len());
+    for (keys, val) in [(["show", "include"], fmt("show", show)), (["hide", "exclude"], fmt("hide", hide))] {
+        let found = (start + 1..end).find(|&i| { let k = lines[i].split('=').next().unwrap_or("").trim(); !lines[i].trim_start().starts_with('#') && keys.contains(&k) && lines[i].contains('=') });
+        match found {
+            Some(i) => {
+                let comment = lines[i].find(" #").filter(|&c| !lines[i][..c].contains('"') || lines[i][..c].matches('"').count() % 2 == 0).map(|c| lines[i][c..].to_string()).unwrap_or_default();
+                lines[i] = format!("{val}{}", if comment.is_empty() { String::new() } else { format!("  {}", comment.trim_start()) });
+            }
+            None => lines.insert(start + 1, val),
+        }
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+#[cfg(test)]
+mod set_lists_tests {
+    #[test]
+    fn rewrites_and_parses() {
+        let t = "[clock]\nhour24 = true\n\n[bots]\ninclude = []   # c\nexclude = [\"x\"]\nmark_size = 40\n";
+        let o = super::set_bots_lists(t, &[], &["Scout".into()]);
+        assert!(o.contains("hide = [\"Scout\"]") && o.contains("mark_size = 40") && o.contains("# c"));
+        let c = super::Config::parse(&o).unwrap();
+        assert_eq!(c.bots.hide, vec!["Scout".to_string()]);
+        let o2 = super::set_bots_lists("", &[], &["A".into()]);
+        assert_eq!(super::Config::parse(&o2).unwrap().bots.hide, vec!["A".to_string()]);
     }
 }

@@ -140,7 +140,7 @@ impl Live {
         }
         let now = SystemTime::now();
         let c = &self.scene.cfg.bots;
-        self.scene.bots = bots::select(self.all_bots.clone(), &c.include, &c.exclude)
+        self.scene.bots = bots::select(self.all_bots.clone(), &c.show, &c.hide, &c.order)
             .into_iter().map(|b| {
                 let mut w = bots::is_working(&self.status_dir, &b, c.stale_after_secs, now);
                 if c.app_state && !w {
@@ -408,8 +408,7 @@ fn session(client: &mut Client, live: &mut Live) -> Result<(), ClientError> {
                     Hit::CancelTouchId => client.cancel_touch_id()?,
                     Hit::WakeAmbient => { live.wake_until = Some(Instant::now() + Duration::from_secs(15)); live.scene.ambient = false; }
                     Hit::Bot(i) => {
-                        let name = live.scene.bots.get(i).map(|b| b.0.name.clone()).unwrap_or_default();
-                        hypr::open_bot(name, false);
+                        if let Some(b) = live.scene.bots.get(i) { hypr::open_bot(b.0.id.clone()); }
                     }
                 }
             }
@@ -458,8 +457,49 @@ fn main() {
             let h = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(60);
             dump(&out, w, h)
         }
+        Some("bots") => std::process::exit(bots_cli(&args[2..])),
         Some("--version") => println!("t1-dash {}", env!("CARGO_PKG_VERSION")),
-        Some(_) => { eprintln!("usage: t1-dash [run | preview DIR | dump OUT.png [W H] | --version]"); std::process::exit(2) }
+        Some(_) => { eprintln!("usage: t1-dash [run | bots [show|hide NAME] | preview DIR | dump OUT.png [W H] | --version]"); std::process::exit(2) }
+    }
+}
+
+/// `t1-dash bots` lists bots with on/off; `bots show|hide NAME` edits [bots] in config.toml
+/// (the running bar picks the change up within a second).
+fn bots_cli(args: &[String]) -> i32 {
+    let cfg_path = std::env::var_os("T1_DASH_CONFIG").map(PathBuf::from).unwrap_or_else(|| config_home().join("touchbar/config.toml"));
+    let text = std::fs::read_to_string(&cfg_path).unwrap_or_default();
+    let cfg = config::Config::parse(&text).unwrap_or_default();
+    let dir = config_home().join("Grok Bot/sand-client-persistence");
+    let all = cfg.bots.roster.clone().or_else(|| bots::find_roster(&dir))
+        .and_then(|p| std::fs::read_to_string(p).ok()).map(|t| bots::parse_roster(&t)).unwrap_or_default();
+    let shown = bots::select(all.clone(), &cfg.bots.show, &cfg.bots.hide, &cfg.bots.order);
+    match args.first().map(String::as_str) {
+        None | Some("list") => {
+            if all.is_empty() { eprintln!("no Grok Bot roster found"); return 1; }
+            let mut list: Vec<&bots::Bot> = shown.iter().collect();
+            list.extend(all.iter().filter(|b| !shown.iter().any(|s| s.id == b.id)));
+            for b in list {
+                let on = shown.iter().any(|s| s.id == b.id);
+                println!("{}  {:<24} {}", if on { "on " } else { "off" }, b.name, b.id);
+            }
+            0
+        }
+        Some(verb @ ("show" | "hide")) if args.len() >= 2 => {
+            let want = args[1..].join(" ");
+            let Some(bot) = all.iter().find(|b| bots::matches(b, &want)) else { eprintln!("no bot named {want:?} (see: t1-dash bots)"); return 1; };
+            let drop = |l: &[String]| l.iter().filter(|x| !bots::matches(bot, x)).cloned().collect::<Vec<_>>();
+            let mut show = cfg.bots.show.clone();
+            let mut hide = drop(&cfg.bots.hide);
+            if verb == "hide" { hide.push(bot.name.clone()); show = drop(&show); }
+            else if !show.is_empty() && !show.iter().any(|x| bots::matches(bot, x)) { show.push(bot.name.clone()); }
+            let out = config::set_bots_lists(&text, &show, &hide);
+            if let Some(d) = cfg_path.parent() { let _ = std::fs::create_dir_all(d); }
+            let tmp = cfg_path.with_extension("toml.tmp");
+            if std::fs::write(&tmp, out).and_then(|_| std::fs::rename(&tmp, &cfg_path)).is_err() { eprintln!("could not write {}", cfg_path.display()); return 1; }
+            println!("{} {}", if verb == "hide" { "hid" } else { "showing" }, bot.name);
+            0
+        }
+        _ => { eprintln!("usage: t1-dash bots [list | show NAME | hide NAME]"); 2 }
     }
 }
 
