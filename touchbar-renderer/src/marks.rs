@@ -1,5 +1,6 @@
-//! Grok Bot marks: geometry baked from the desktop app (assets/marks.json, see
-//! tools/gen-marks.cjs) and a 2D port of its idle/working animation.
+//! Grok Bot marks: geometry extracted at runtime from the locally installed app
+//! (tools/extract-marks.cjs, cached in ~/.cache/t1-dash/marks.json) and a 2D port of its
+//! idle/working animation. No app artwork is compiled in.
 use crate::theme::Rgb;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -25,22 +26,88 @@ pub struct Shape {
     pub eyes: Vec<(Path, Path, (f32, f32), (f32, f32))>,
 }
 
+/// Newer app versions: frames sampled from the app's own motion player (format 2).
+pub struct Motion {
+    pub fps: f32,
+    pub size: f32,
+    /// (body rings, eye rings) per unique frame
+    pub frames: Vec<(Path, Vec<Path>)>,
+    /// shape -> (idle frame indices, working frame indices, extent radius in frame units)
+    pub shapes: HashMap<String, (Vec<u32>, Vec<u32>, f32)>,
+}
+
+#[derive(Deserialize)]
+struct RawFrame { b: Vec<Vec<i32>>, e: Vec<Vec<i32>> }
+#[derive(Deserialize)]
+struct RawMotionShape { idle: Vec<u32>, working: Vec<u32> }
+#[derive(Deserialize)]
+struct RawMotion { size: f32, fps: f32, scale: f32, colors: HashMap<String, RawColor>, shapes: HashMap<String, RawMotionShape>, frames: Vec<RawFrame> }
+
+fn ring(v: &[i32], k: f32) -> Option<Path> {
+    let mut pb = PathBuilder::new();
+    for (i, c) in v.chunks_exact(2).enumerate() {
+        let (x, y) = (c[0] as f32 / k, c[1] as f32 / k);
+        if i == 0 { pb.move_to(x, y) } else { pb.line_to(x, y) }
+    }
+    pb.close();
+    pb.finish()
+}
+
 pub struct Marks {
+    pub motion: Option<Motion>,
     pub center: f32,
     pub colors: HashMap<String, Rgb>,
     pub shapes: HashMap<String, Shape>,
 }
 
 impl Marks {
+    pub fn empty() -> Marks {
+        Marks { motion: None, center: 114.2705, colors: HashMap::new(), shapes: HashMap::new() }
+    }
+    pub fn is_empty(&self) -> bool { self.shapes.is_empty() && self.motion.is_none() }
+
+    /// Geometry from the cache, re-extracted from the installed app when the cache is missing or
+    /// older than the app archive. Empty when the app is absent or extraction fails.
     #[cfg(feature = "grok-bot")]
-    pub fn builtin() -> Marks {
-        Marks::from_json(include_str!("../assets/marks.json")).expect("baked marks.json")
+    pub fn load() -> Marks {
+        let asar = std::path::PathBuf::from(std::env::var_os("T1_DASH_GROK_ASAR").unwrap_or_else(|| "/opt/Grok Bot/resources/app.asar".into()));
+        let cache = std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")).join("t1-dash");
+        let out = cache.join("marks.json");
+        let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let Some(app_time) = mtime(&asar) else { return Marks::empty() };
+        if mtime(&out).is_none_or(|t| t < app_time) {
+            let script = cache.join("extract-marks.cjs");
+            let _ = std::fs::create_dir_all(&cache);
+            let _ = std::fs::write(&script, include_str!("../tools/extract-marks.cjs"));
+            let electron = asar.parent().and_then(|p| p.parent()).map(|p| p.join("grok-bot"));
+            // success = the script exited 0 AND left a fresh cache (an Electron build with the
+            // run-as-node fuse off exits 0 without running the script)
+            let ran = |cmd: &mut std::process::Command| {
+                cmd.arg(&script).arg(&asar).arg(&out).stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
+                    && mtime(&out).is_some_and(|t| t >= app_time)
+            };
+            let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+            let ok = ran(&mut std::process::Command::new("node"))
+                || ran(&mut std::process::Command::new(home.join(".local/share/mise/shims/node")))
+                || electron.is_some_and(|e| ran(std::process::Command::new(e).env("ELECTRON_RUN_AS_NODE", "1")));
+            if !ok { eprintln!("t1-dash: could not extract Grok Bot marks from {}", asar.display()); }
+        }
+        match std::fs::read_to_string(&out).map_err(|e| e.to_string()).and_then(|t| Marks::from_json(&t)) {
+            Ok(m) => m,
+            Err(e) => { eprintln!("t1-dash: Grok Bot marks unavailable: {e}"); Marks::empty() }
+        }
     }
     #[cfg(not(feature = "grok-bot"))]
-    pub fn builtin() -> Marks {
-        Marks { center: 114.2705, colors: HashMap::new(), shapes: HashMap::new() }
-    }
+    pub fn load() -> Marks { Marks::empty() }
+
+    /// Synthetic test geometry (plain polygons), not app artwork.
+    #[cfg(test)]
+    pub fn synthetic() -> Marks { Marks::from_json(include_str!("../tests/fixtures/marks-synthetic.json")).unwrap() }
     pub fn from_json(text: &str) -> Result<Marks, String> {
+        #[derive(Deserialize)]
+        struct Format { format: Option<u32> }
+        if serde_json::from_str::<Format>(text).ok().and_then(|f| f.format) == Some(2) { return Marks::from_motion_json(text); }
         let raw: RawMarks = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let mut shapes = HashMap::new();
         for (name, s) in raw.shapes {
@@ -57,7 +124,31 @@ impl Marks {
             shapes.insert(name, Shape { scale: s.scale, body, eyes });
         }
         let colors = raw.colors.into_iter().filter_map(|(k, v)| Some((k, Rgb::parse(&v.dark)?))).collect();
-        Ok(Marks { center: raw.center, colors, shapes })
+        Ok(Marks { motion: None, center: raw.center, colors, shapes })
+    }
+
+    fn from_motion_json(text: &str) -> Result<Marks, String> {
+        let raw: RawMotion = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let k = raw.scale.max(1.0);
+        let frames: Vec<(Path, Vec<Path>)> = raw.frames.iter().map(|f| {
+            let mut pb = PathBuilder::new();
+            for r in &f.b { if let Some(p) = ring(r, k) { pb.push_path(&p); } }
+            let body = pb.finish().unwrap_or_else(|| PathBuilder::from_rect(tiny_skia::Rect::from_xywh(0.0, 0.0, 0.1, 0.1).unwrap()));
+            (body, f.e.iter().filter_map(|r| ring(r, k)).collect())
+        }).collect();
+        let c = raw.size / 2.0;
+        let mut shapes = HashMap::new();
+        for (name, s) in raw.shapes {
+            if s.idle.is_empty() || s.working.is_empty() || s.idle.iter().chain(&s.working).any(|&i| i as usize >= frames.len()) {
+                return Err(format!("bad frames for {name}"));
+            }
+            // extent at rest (first idle frame) so every shape fills the same box like the app's still marks
+            let b = frames[s.idle[0] as usize].0.bounds();
+            let r = [c - b.left(), b.right() - c, c - b.top(), b.bottom() - c].into_iter().fold(1.0f32, f32::max);
+            shapes.insert(name, (s.idle, s.working, r));
+        }
+        let colors = raw.colors.into_iter().filter_map(|(k, v)| Some((k, Rgb::parse(&v.dark)?))).collect();
+        Ok(Marks { motion: Some(Motion { fps: raw.fps, size: raw.size, frames, shapes }), center: c, colors, shapes: HashMap::new() })
     }
 
     /// Dark-mode fill like the app (black renders white in dark mode).
@@ -68,7 +159,31 @@ impl Marks {
         })
     }
     pub fn shape_name<'a>(&'a self, id: Option<&'a str>, bot_id: &str) -> &'a str {
-        match id { Some(s) if self.shapes.contains_key(s) => s, _ => DEFAULT_SHAPES[(fnv1a(bot_id) as usize) % DEFAULT_SHAPES.len()] }
+        let known = |s: &str| self.shapes.contains_key(s) || self.motion.as_ref().is_some_and(|m| m.shapes.contains_key(s));
+        match id { Some(s) if known(s) => s, _ => DEFAULT_SHAPES[(fnv1a(bot_id) as usize) % DEFAULT_SHAPES.len()] }
+    }
+
+    /// Format 2: draws the app's own sampled frame for this bot at time `t`. Returns false if unavailable.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_motion(&self, pm: &mut Pixmap, shape: &str, bot_id: &str, working: bool, t: f32, fill: Rgb, eye: Rgb, cx: f32, cy: f32, size: f32, alpha: f32) -> bool {
+        let Some(m) = &self.motion else { return false };
+        let Some((idle, work, r)) = m.shapes.get(shape) else { return false };
+        let seq = if working { work } else { idle };
+        let seed = fnv1a(bot_id);
+        let t = t + rand01(seed, 7) * 20.0; // de-sync bots like separate app instances
+        let i = seq[((t * m.fps) as usize) % seq.len()] as usize;
+        let (body, eyes) = &m.frames[i];
+        let k = size * 0.5 / r;
+        let c = m.size / 2.0;
+        let tf = Transform::from_translate(cx, cy).pre_scale(k, k).pre_translate(-c, -c);
+        let mut paint = Paint::default();
+        paint.anti_alias = true;
+        paint.set_color_rgba8(fill.0, fill.1, fill.2, (alpha * 255.0) as u8);
+        pm.fill_path(body, &paint, FillRule::Winding, tf, None);
+        paint.set_color_rgba8(eye.0, eye.1, eye.2, 255);
+        for e in eyes { pm.fill_path(e, &paint, FillRule::Winding, tf, None); }
+        if working { working_dot(pm, cx, cy, size); }
+        true
     }
 
     /// Draws one mark centered at (cx, cy) with box size `size` px.
@@ -94,7 +209,15 @@ impl Marks {
                 .pre_translate(-ctr.0, -ctr.1);
             if pose.blink > 0.02 { pm.fill_path(p, &paint, FillRule::EvenOdd, t, None); }
         }
-        if pose.working {
+        if pose.working { working_dot(pm, cx, cy, size); }
+    }
+}
+
+fn working_dot(pm: &mut Pixmap, cx: f32, cy: f32, size: f32) {
+    let mut paint = Paint::default();
+    paint.anti_alias = true;
+    {
+        {
             let d = (size * 0.2).max(6.0);
             let (x, y) = (cx + size / 2.0 - d / 2.0 - 1.0, cy + size / 2.0 - d / 2.0 - 1.0);
             if let Some(ring) = PathBuilder::from_circle(x, y, d / 2.0 + 1.5) {
@@ -251,10 +374,9 @@ pub fn parse_svg_path(d: &str) -> Option<Path> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "grok-bot")]
     #[test]
     fn all_18_shapes_load() {
-        let m = Marks::builtin();
+        let m = Marks::synthetic();
         assert_eq!(m.shapes.len(), 18);
         assert_eq!(m.colors["orange"], Rgb(0xFF, 0x67, 0x00));
         assert_eq!(m.colors["black"], Rgb(0xFF, 0xFF, 0xFF));
@@ -273,7 +395,6 @@ mod tests {
         assert!((blink_curve(0.15) - 1.08).abs() < 1e-3);
         assert_eq!(blink_curve(0.5), 1.0);
     }
-    #[cfg(feature = "grok-bot")]
     #[test]
     fn working_pose_moves_and_has_dot() {
         let a: Vec<Pose> = (0..30).map(|i| animate("atlas", true, i as f32 * 0.033, 40.0).0).collect();
@@ -288,5 +409,20 @@ mod tests {
     fn idle_blinks_within_14s() {
         let blinked = (0..14 * 60).any(|i| animate("cobalt", false, i as f32 / 60.0, 40.0).0.blink < 0.5);
         assert!(blinked);
+    }
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::*;
+    #[test]
+    fn motion_format_draws_sampled_frames() {
+        let m = Marks::from_json(include_str!("../tests/fixtures/marks-motion-synthetic.json")).unwrap();
+        assert!(!m.is_empty());
+        assert_eq!(m.shape_name(Some("ring"), "x"), "ring");
+        let mut a = Pixmap::new(80, 80).unwrap();
+        assert!(m.draw_motion(&mut a, "ring", "bot", false, 0.0, Rgb(255, 255, 255), Rgb(0, 0, 0), 40.0, 40.0, 60.0, 1.0));
+        assert!(a.pixel(40, 30).unwrap().red() > 200, "body filled");
+        assert!(!m.draw_motion(&mut a, "missing", "bot", false, 0.0, Rgb(255, 255, 255), Rgb(0, 0, 0), 40.0, 40.0, 60.0, 1.0));
     }
 }

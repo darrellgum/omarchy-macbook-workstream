@@ -25,7 +25,7 @@ pub fn demo_scene() -> Scene {
         net_rate: 2.4 * 1048576.0, mem_gib: 4.2, mem_total_gib: 16.0, cpu_temp: Some(64.0), weather: Some(("\u{e30d}".into(), "62°F".into())),
         battery: Battery { percent: 74, charging: true, present: true, on_ac: true },
         time: LocalTime { hour: 14, min: 12, sec: 5, wday: 5, mday: 9, mon: 9 },
-        fn_pressed: false, ambient: false, idle_secs: 0.0, t: 3.0, unix_secs: 0, touch_id: None, pressed: None,
+        fn_pressed: false, controls: false, ambient: false, idle_secs: 0.0, t: 3.0, unix_secs: 0, touch_id: None, pressed: None,
     }
 }
 
@@ -38,9 +38,9 @@ fn save(s: &Scene, marks: &Marks, text: &mut Text, path: &Path) -> Pixmap {
 }
 
 pub fn render_all(dir: &Path) {
-    let generic = !cfg!(feature = "grok-bot");
     std::fs::create_dir_all(dir).unwrap();
-    let marks = Marks::builtin();
+    let marks = Marks::load();
+    let generic = marks.is_empty();
     let mut text = Text::load(None);
     let mut s = demo_scene();
     if generic { s.bots.clear(); s.activities = demo_activities(); }
@@ -68,6 +68,8 @@ pub fn render_all(dir: &Path) {
     s.t = 3.0;
     let mut f = demo_scene(); f.fn_pressed = true; f.pressed = Some(crate::scene::Hit::FKey(5));
     save(&f, &marks, &mut text, &dir.join("fn-layer.png"));
+    let mut k = demo_scene(); k.controls = true; k.pressed = Some(crate::scene::Hit::Ctl(6));
+    save(&k, &marks, &mut text, &dir.join("controls.png"));
     let mut a = demo_scene(); a.ambient = true; a.t = 40.0;
     save(&a, &marks, &mut text, &dir.join("ambient.png"));
     let mut d = demo_scene(); d.idle_secs = 120.0; d.unix_secs = 240;

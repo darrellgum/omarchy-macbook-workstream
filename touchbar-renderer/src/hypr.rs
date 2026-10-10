@@ -114,8 +114,35 @@ pub const GROK_LAUNCH: &str = "/opt/Grok Bot/grok-bot";
 /// Tap on a bot mark: ONLY focus (or launch) the Grok Bot app. Never sends keystrokes or text.
 /// This app version registers grokbot:// routes only for bot-template/plugin-add/open/settings,
 /// so there is no per-agent deep link to navigate to a specific chat.
-pub fn open_bot(_bot_name: String, _navigate: bool) {
-    std::thread::spawn(focus_or_launch_grok_sync);
+/// Opens that bot's conversation via the app's `grokbot://app/v1/agent?id=` route when the
+/// installed app has it (newer builds route it to the running instance), then focuses the window.
+/// Older builds without the route just get focused. Never sends keystrokes.
+pub fn open_bot(bot_id: String) {
+    std::thread::spawn(move || {
+        let id_ok = !bot_id.is_empty() && bot_id.len() <= 128 && bot_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if id_ok && app_has_agent_route() {
+            let url = format!("grokbot://app/v1/agent?id={bot_id}");
+            let ok = std::process::Command::new("xdg-open").arg(&url)
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                .status().is_ok_and(|s| s.success());
+            if ok { std::thread::sleep(std::time::Duration::from_millis(300)); }
+        }
+        focus_or_launch_grok_sync();
+    });
+}
+
+/// Whether the installed app routes `/v1/agent` links (scanned once per app update).
+pub fn app_has_agent_route() -> bool {
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<(std::time::SystemTime, bool)>> = Mutex::new(None);
+    let asar = std::env::var_os("T1_DASH_GROK_ASAR").map(std::path::PathBuf::from).unwrap_or_else(|| "/opt/Grok Bot/resources/app.asar".into());
+    let Some(m) = std::fs::metadata(&asar).and_then(|m| m.modified()).ok() else { return false };
+    let mut c = CACHE.lock().unwrap();
+    if let Some((t, v)) = *c { if t == m { return v; } }
+    let needle = b"\"/v1/agent\",{id:";
+    let v = std::fs::read(&asar).map(|b| b.windows(needle.len()).any(|w| w == needle)).unwrap_or(false);
+    *c = Some((m, v));
+    v
 }
 
 /// Focus the Grok Bot window if one exists, else have Hyprland launch the app

@@ -14,10 +14,10 @@ serde_json = "1"
 toml = "0.8"
 
 [features]
-default = []
-# Optional Grok Bot desktop integration: avatar marks, roster/unread/working state, tap-to-focus.
-# Needs assets/marks.json generated locally from your own installed app (not redistributed);
-# build.sh enables it automatically when that file exists.
+default = ["grok-bot"]
+# Grok Bot desktop integration: avatar marks, roster/unread/working state, tap-to-focus.
+# Active only when the app is installed: mark geometry is extracted from it at runtime.
+# Build with --no-default-features to leave it out entirely.
 grok-bot = []
 
 [profile.release]

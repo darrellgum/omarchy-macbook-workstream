@@ -69,6 +69,10 @@ impl SeqPacket {
         if let Some(path) = std::env::var_os("T1_DASH_TEST_SOCKET") {
             return Self::connect_at(Path::new(&path), unsafe { libc::getuid() });
         }
+        // t1-dash: T2 Macs have no T1Bridge; t1-dash-t2d serves the same protocol, root-owned.
+        if let Some(path) = std::env::var_os("T1_DASH_SOCKET") {
+            return Self::connect_at(Path::new(&path), 0);
+        }
         Self::connect_at(Path::new(SOCKET_PATH), 0)
     }
 

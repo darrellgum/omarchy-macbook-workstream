@@ -11,7 +11,7 @@ use tiny_skia::{PathBuilder, Pixmap};
 pub const FKEYS: [&str; 13] = ["esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Hit { Esc, FKey(usize), Workspace(i64), Bot(usize), WakeAmbient, CancelTouchId }
+pub enum Hit { Esc, FKey(usize), Ctl(usize), CloseControls, Workspace(i64), Bot(usize), WakeAmbient, CancelTouchId }
 
 #[derive(Clone, Debug, Default)]
 pub struct LocalTime { pub hour: u32, pub min: u32, pub sec: u32, pub wday: u32, pub mday: u32, pub mon: u32 }
@@ -29,6 +29,8 @@ impl LocalTime {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TouchId { Authenticate, Approve, Retry, Success, Enrollment(u8) }
+
+struct Fit { cpu: bool, mem: bool, net: bool, weather: bool }
 
 pub struct Scene {
     pub width: u32,
@@ -48,6 +50,8 @@ pub struct Scene {
     pub battery: Battery,
     pub time: LocalTime,
     pub fn_pressed: bool,
+    /// hidden controls layer (double-tap Fn)
+    pub controls: bool,
     pub ambient: bool,
     /// seconds since last touch / desktop activity
     pub idle_secs: f32,
@@ -86,15 +90,29 @@ impl Scene {
         ids
     }
 
-    fn widget_width(&self, name: &str) -> f32 {
+    /// What fits: on narrow panels (T2 is 2008 px) the least important bits are dropped
+    /// in this order: NET, weather, MEM, CPU, so the clock always stays fully visible.
+    fn fit(&self, layout: &[&str]) -> Fit {
+        let p = &self.cfg.pulse;
+        let mut f = Fit { cpu: p.cpu, mem: p.mem, net: p.net, weather: true };
+        let avail = self.width as f32 - 16.0 - 4.0 * self.cfg.oled.shift_px as f32;
+        let total = |f: &Fit| layout.iter().map(|w| self.widget_width(w, f)).sum::<f32>();
+        for step in 0..4 {
+            if total(&f) <= avail { break; }
+            match step { 0 => f.net = false, 1 => f.weather = false, 2 => f.mem = false, _ => f.cpu = false }
+        }
+        f
+    }
+
+    fn widget_width(&self, name: &str, fit: &Fit) -> f32 {
         let ms = self.cfg.bots.mark_size as f32;
         match name {
             "esc" => 116.0,
             "workspaces" => self.workspace_ids().len() as f32 * 66.0 + 18.0,
             "activity" => if self.activities.is_empty() { 0.0 } else { self.activities.iter().map(|a| 70.0 + a.label.chars().count() as f32 * 13.0).sum::<f32>() + 14.0 },
             "bots" => if self.bots.is_empty() { 0.0 } else { self.bots.len() as f32 * (ms + 14.0) + 22.0 },
-            "pulse" => { let p = &self.cfg.pulse; let pw = p.width as f32; 14.0 + if p.cpu { 136.0 + pw } else { 0.0 } + if p.mem { 132.0 } else { 0.0 } + if p.net { 104.0 + pw + 6.0 } else { 0.0 } }
-            "weather" => if self.weather.is_some() { 128.0 } else { 0.0 },
+            "pulse" => { let p = fit; let pw = self.cfg.pulse.width as f32; if !(p.cpu || p.mem || p.net) { 0.0 } else { 14.0 + if p.cpu { 136.0 + pw } else { 0.0 } + if p.mem { 132.0 } else { 0.0 } + if p.net { 104.0 + pw + 6.0 } else { 0.0 } } }
+            "weather" => if self.weather.is_some() && fit.weather { 128.0 } else { 0.0 },
             "battery" => if self.battery.present { 132.0 } else { 0.0 },
             "clock" => 262.0,
             _ => 0.0,
@@ -105,6 +123,7 @@ impl Scene {
         pm.fill(tiny_skia::Color::BLACK);
         let mut hits = Vec::new();
         if let Some(tid) = &self.touch_id { self.render_touch_id(pm, text, tid, &mut hits); return Frame { hits, animating: true, idle_anim: false }; }
+        if self.controls { self.render_controls(pm, text, &mut hits); return Frame { hits, animating: false, idle_anim: false }; }
         if self.fn_pressed { self.render_fn(pm, text, &mut hits); return Frame { hits, animating: false, idle_anim: false }; }
         if self.ambient { self.render_ambient(pm, text, &mut hits); return Frame { hits, animating: true, idle_anim: false }; }
 
@@ -118,13 +137,14 @@ impl Scene {
         let mut animating = false;
 
         let layout: Vec<&str> = self.cfg.layout.iter().map(String::as_str).collect();
-        let fixed: f32 = layout.iter().map(|w| self.widget_width(w)).sum();
+        let fit = self.fit(&layout);
+        let fixed: f32 = layout.iter().map(|w| self.widget_width(w, &fit)).sum();
         let spacers = layout.iter().filter(|w| **w == "spacer").count().max(1) as f32;
         let spacer_w = ((self.width as f32 - 16.0 - fixed) / spacers).max(0.0);
         let mut x = 8.0 + ox;
         let mut prev_drawn = false;
         for name in layout {
-            let w = if name == "spacer" { spacer_w } else { self.widget_width(name) };
+            let w = if name == "spacer" { spacer_w } else { self.widget_width(name, &fit) };
             if w <= 0.0 { continue; }
             if name != "spacer" && prev_drawn && matches!(name, "bots" | "activity" | "pulse") {
                 draw::rect(pm, x, cy - 20.0, 1.5, 40.0, th.muted, dim);
@@ -184,7 +204,7 @@ impl Scene {
                         let fill = marks.color(bot.color.as_deref(), &bot.id);
                         let shape = marks.shape_name(bot.shape.as_deref(), &bot.id);
                         let a = if *working { 1.0 } else { dim.max(0.9) };
-                        marks.draw(pm, shape, fill, Rgb(0, 0, 0), bx, cy, ms, &pose, a);
+                        if marks.draw_motion(pm, shape, &bot.id, *working, self.t, fill, Rgb(0, 0, 0), bx, cy, ms, a) { animating = true; } else { marks.draw(pm, shape, fill, Rgb(0, 0, 0), bx, cy, ms, &pose, a); }
                         // app sidebar markers: "blocked" (awaiting your response) wins over "unread"
                         if bot.blocked || bot.unread > 0 {
                             let (bxp, byp) = (bx + ms / 2.0 - 4.0, cy - ms / 2.0 + 5.0);
@@ -203,7 +223,7 @@ impl Scene {
                     let pw = self.cfg.pulse.width as f32;
                     let mut sx = x + 14.0;
                     let (lp, vp) = (18.0, 26.0);
-                    if self.cfg.pulse.cpu {
+                    if fit.cpu {
                         text.draw(pm, "CPU", sx, cy - 14.0, lp, th.cyan, dim);
                         let v = format!("{:.0}%", self.cpu.last().copied().unwrap_or(0.0) * 100.0);
                         let vw = text.draw(pm, &v, sx, cy + 12.0, vp, th.bright_foreground, dim);
@@ -214,14 +234,14 @@ impl Scene {
                         draw::sparkline(pm, &self.cpu, sysmon::HISTORY, sx + 124.0, cy - 25.0, pw, 50.0, th.cyan, dim.max(0.9));
                         sx += 128.0 + pw + 8.0;
                     }
-                    if self.cfg.pulse.mem {
+                    if fit.mem {
                         text.draw(pm, "MEM", sx, cy - 14.0, lp, th.magenta, dim);
                         let used = format!("{:.1}", self.mem_gib);
                         let uw = text.draw(pm, &used, sx, cy + 12.0, vp, th.bright_foreground, dim);
                         text.draw(pm, &format!("/{:.0}G", self.mem_total_gib.round()), sx + uw, cy + 12.0, vp * 0.75, th.foreground, dim);
                         sx += 132.0;
                     }
-                    if self.cfg.pulse.net {
+                    if fit.net {
                         text.draw(pm, "NET", sx, cy - 14.0, lp, th.green, dim);
                         text.draw(pm, &sysmon::human_rate(self.net_rate), sx, cy + 12.0, vp, th.bright_foreground, dim);
                         draw::sparkline(pm, &self.net, sysmon::HISTORY, sx + 98.0, cy - 25.0, pw, 50.0, th.green, dim.max(0.9));
@@ -284,6 +304,30 @@ impl Scene {
             text.draw_centered(pm, label, x + kw / 2.0, h / 2.0, 28.0, if pressed { th.background } else { th.bright_foreground }, 1.0);
             hits.push(([x - gap / 2.0, 0.0, kw + gap, h], Hit::FKey(i)));
             x += kw + gap;
+        }
+    }
+
+    fn render_controls(&self, pm: &mut Pixmap, text: &mut Text, hits: &mut Vec<([f32; 4], Hit)>) {
+        let th = &brighten(&self.theme);
+        let h = self.height as f32;
+        let (gap, esc_w, key_w) = (8.0, 100.0, 150.0);
+        let mut x = 8.0;
+        let pressed = self.pressed == Some(Hit::CloseControls);
+        draw::rrect(pm, x, h / 2.0 - 27.0, esc_w, 54.0, 9.0, if pressed { th.accent } else { th.selection }, 1.0);
+        text.draw_centered(pm, "esc", x + esc_w / 2.0, h / 2.0, 28.0, if pressed { th.background } else { th.bright_foreground }, 1.0);
+        hits.push(([0.0, 0.0, x + esc_w + gap / 2.0, h], Hit::CloseControls));
+        x += esc_w + gap * 3.0;
+        let mut group = "";
+        for (i, (label, _)) in self.cfg.controls.buttons().iter().enumerate() {
+            let g = label.split(' ').next().unwrap_or("");
+            if !group.is_empty() && g != group { x += gap * 3.0; }
+            group = g;
+            let p = self.pressed == Some(Hit::Ctl(i));
+            draw::rrect(pm, x, h / 2.0 - 27.0, key_w, 54.0, 9.0, if p { th.accent } else { th.selection }, 1.0);
+            if !p { draw::rrect_stroke(pm, x + 0.5, h / 2.0 - 26.5, key_w - 1.0, 53.0, 9.0, th.muted, 1.0, 1.5); }
+            text.draw_centered(pm, label, x + key_w / 2.0, h / 2.0, 24.0, if p { th.background } else { th.bright_foreground }, 1.0);
+            hits.push(([x - gap / 2.0, 0.0, key_w + gap, h], Hit::Ctl(i)));
+            x += key_w + gap;
         }
     }
 
@@ -404,17 +448,16 @@ pub mod tests {
             net_rate: 2.4 * 1048576.0, mem_gib: 5.1, mem_total_gib: 16.0, cpu_temp: Some(64.0), weather: Some(("\u{e30d}".into(), "62°F".into())),
             battery: Battery { percent: 74, charging: false, present: true, on_ac: false },
             time: LocalTime { hour: 14, min: 12, sec: 5, wday: 5, mday: 9, mon: 9 },
-            fn_pressed: false, ambient: false, idle_secs: 0.0, t: 3.0, unix_secs: 0, touch_id: None, pressed: None,
+            fn_pressed: false, controls: false, ambient: false, idle_secs: 0.0, t: 3.0, unix_secs: 0, touch_id: None, pressed: None,
         }
     }
 
-    #[cfg(feature = "grok-bot")]
     #[test]
     fn layout_hits_cover_controls() {
         let s = sample_scene();
         let mut pm = Pixmap::new(s.width, s.height).unwrap();
         let mut text = Text::load(None);
-        let f = s.render(&mut pm, &Marks::builtin(), &mut text);
+        let f = s.render(&mut pm, &Marks::synthetic(), &mut text);
         assert_eq!(hit_test(&f.hits, 30.0, 30.0), Some(Hit::Esc));
         let ws: Vec<i64> = f.hits.iter().filter_map(|(_, h)| if let Hit::Workspace(i) = h { Some(*i) } else { None }).collect();
         assert_eq!(ws, vec![1, 2, 3, 4, 5]);
@@ -429,7 +472,7 @@ pub mod tests {
         let mut s = sample_scene();
         s.fn_pressed = true;
         let mut pm = Pixmap::new(s.width, s.height).unwrap();
-        let f = s.render(&mut pm, &Marks::builtin(), &mut Text::load(None));
+        let f = s.render(&mut pm, &Marks::synthetic(), &mut Text::load(None));
         assert_eq!(f.hits.len(), 13);
         assert_eq!(hit_test(&f.hits, 2160.0, 30.0), Some(Hit::FKey(12)));
         assert_eq!(hit_test(&f.hits, 20.0, 30.0), Some(Hit::FKey(0)));
@@ -441,10 +484,34 @@ pub mod tests {
         s.bots.clear();
         s.activities = vec![crate::bots::Activity { name: "claude".into(), label: "Claude".into() }];
         let mut pm = Pixmap::new(s.width, s.height).unwrap();
-        let f = s.render(&mut pm, &Marks { center: 114.27, colors: Default::default(), shapes: Default::default() }, &mut Text::load(None));
+        let f = s.render(&mut pm, &Marks { motion: None, center: 114.27, colors: Default::default(), shapes: Default::default() }, &mut Text::load(None));
         assert!(!f.hits.iter().any(|(_, h)| matches!(h, Hit::Bot(_))));
         assert_eq!(hit_test(&f.hits, 30.0, 30.0), Some(Hit::Esc));
         assert!(f.animating);
+    }
+
+    #[test]
+    fn narrow_panel_keeps_clock_visible() {
+        let mut s = sample_scene();
+        s.width = 2008;
+        let layout: Vec<&str> = s.cfg.layout.iter().map(String::as_str).collect();
+        let f = s.fit(&layout);
+        let total: f32 = layout.iter().map(|w| s.widget_width(w, &f)).sum();
+        assert!(total <= 2008.0 - 16.0, "{total}");
+        assert!(f.cpu, "CPU kept");
+        s.width = 2170;
+        let f = s.fit(&layout);
+        assert!(f.net && f.mem && f.cpu);
+    }
+
+    #[test]
+    fn controls_layer_has_buttons_and_close() {
+        let mut s = sample_scene();
+        s.controls = true;
+        let mut pm = Pixmap::new(s.width, s.height).unwrap();
+        let f = s.render(&mut pm, &Marks { motion: None, center: 114.27, colors: Default::default(), shapes: Default::default() }, &mut Text::load(None));
+        assert_eq!(hit_test(&f.hits, 30.0, 30.0), Some(Hit::CloseControls));
+        assert_eq!(f.hits.iter().filter(|(_, h)| matches!(h, Hit::Ctl(_))).count(), 7);
     }
 
     #[test]
@@ -460,21 +527,20 @@ pub mod tests {
         let mut s = sample_scene();
         s.touch_id = Some(TouchId::Authenticate);
         let mut pm = Pixmap::new(s.width, s.height).unwrap();
-        s.render(&mut pm, &Marks::builtin(), &mut Text::load(None));
+        s.render(&mut pm, &Marks::synthetic(), &mut Text::load(None));
         let w = s.width as usize;
         let green_right = pm.pixels().iter().enumerate().filter(|(i, p)| i % w > 1900 && p.green() > 60 && p.red() < 40).count();
         assert!(green_right > 100, "{green_right}");
         s.touch_id = Some(TouchId::Success);
-        s.render(&mut pm, &Marks::builtin(), &mut Text::load(None));
+        s.render(&mut pm, &Marks::synthetic(), &mut Text::load(None));
         assert_eq!(pm.pixels().iter().enumerate().filter(|(i, p)| i % w > 1900 && p.green() > 60 && p.red() < 40).count(), 0);
     }
-    #[cfg(feature = "grok-bot")]
     #[test]
     fn working_bot_draws_green_dot() {
         let mut s = sample_scene();
         s.bots[0].1 = true;
         let mut pm = Pixmap::new(s.width, s.height).unwrap();
-        let f = s.render(&mut pm, &Marks::builtin(), &mut Text::load(None));
+        let f = s.render(&mut pm, &Marks::synthetic(), &mut Text::load(None));
         assert!(f.animating);
         let green = pm.pixels().iter().filter(|p| p.red() == 0 && p.green() == 0xc9 && p.blue() == 0x72).count();
         assert!(green > 10, "green pixels {green}");

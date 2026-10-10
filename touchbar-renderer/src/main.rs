@@ -1,6 +1,5 @@
 //! t1-dash: custom T1Bridge Touch Bar renderer (v1).
 #![allow(clippy::too_many_arguments)]
-#![cfg_attr(not(feature = "grok-bot"), allow(dead_code))]
 mod bots;
 mod config;
 mod draw;
@@ -72,12 +71,12 @@ impl Live {
             cfg_mtime: mtime(&cfg_path), cfg_path,
             theme_path: None, theme_mtime: None, roster_path: None, roster_mtime: None,
             status_dir: PathBuf::new(), all_bots: vec![],
-            marks: marks::Marks::builtin(), text,
+            marks: marks::Marks::load(), text,
             sys: sysmon::SysMon::new(PathBuf::from("/")),
             scene: Scene {
                 width, height, cfg, theme: theme::Theme::default(), bots: vec![], workspaces: vec![], active_ws: 1,
                 cpu: vec![], mem: vec![], net: vec![], activities: vec![], net_rate: 0.0, mem_gib: 0.0, mem_total_gib: 0.0, cpu_temp: None, weather: None, battery: Default::default(),
-                time: LocalTime::now(), fn_pressed: false, ambient: false, idle_secs: 0.0, t: 0.0, unix_secs: 0, touch_id: None, pressed: None,
+                time: LocalTime::now(), fn_pressed: false, controls: false, ambient: false, idle_secs: 0.0, t: 0.0, unix_secs: 0, touch_id: None, pressed: None,
             },
             hypr_rx: rx, screensaver: false, last_activity: now, wake_until: None, started: now, last_sample: now - Duration::from_secs(2), irq_total: 0, theme_text: String::new(), replicas: Default::default(), replica_state: Default::default(), persistence_dir: config_home().join("Grok Bot/sand-client-persistence"), weather: Default::default(),
         };
@@ -91,7 +90,7 @@ impl Live {
         let cfg = &self.scene.cfg;
         self.theme_path = cfg.theme.path.clone().or_else(|| theme::default_theme_paths(&home()).into_iter().find(|p| p.exists()));
         self.theme_mtime = None;
-        self.roster_path = if grok_enabled(cfg) { cfg.bots.roster.clone().or_else(|| bots::find_roster(&self.persistence_dir)) } else { None };
+        self.roster_path = if grok_enabled(cfg) && !self.marks.is_empty() { cfg.bots.roster.clone().or_else(|| bots::find_roster(&self.persistence_dir)) } else { None };
         if self.roster_path.is_none() { self.all_bots.clear(); self.replicas.clear(); }
         self.roster_mtime = None;
         self.status_dir = cfg.bots.status_dir.clone().unwrap_or_else(|| home().join(".local/state/touchbar/bots"));
@@ -141,7 +140,7 @@ impl Live {
         }
         let now = SystemTime::now();
         let c = &self.scene.cfg.bots;
-        self.scene.bots = bots::select(self.all_bots.clone(), &c.include, &c.exclude)
+        self.scene.bots = bots::select(self.all_bots.clone(), &c.show, &c.hide, &c.order)
             .into_iter().map(|b| {
                 let mut w = bots::is_working(&self.status_dir, &b, c.stale_after_secs, now);
                 if c.app_state && !w {
@@ -337,8 +336,21 @@ fn session(client: &mut Client, live: &mut Live) -> Result<(), ClientError> {
     let mut animating = false;
     let mut idle_anim = false;
     let mut last_sec = 0u64;
+    let mut fn_raw = false;
+    let mut last_fn_tap: Option<Instant> = None;
+    let mut controls_since = Instant::now();
+    let mut shown_controls = false;
     loop {
         if STOP.load(Ordering::SeqCst) { return Ok(()); }
+        if live.scene.controls && controls_since.elapsed() >= Duration::from_secs(live.scene.cfg.controls.timeout_secs.max(1)) {
+            live.scene.controls = false;
+        }
+        if live.scene.controls != shown_controls {
+            shown_controls = live.scene.controls;
+            live.scene.fn_pressed = fn_raw && !live.scene.controls;
+            hits = live.scene.render(&mut pm, &live.marks, &mut live.text).hits;
+            dirty = true;
+        }
         dirty |= live.poll_sources();
         let fps = live.scene.cfg.fps.clamp(1, 60);
         let frame_dt = Duration::from_secs_f32(1.0 / if live.scene.ambient { (fps / 2).max(1) } else { fps } as f32);
@@ -359,8 +371,22 @@ fn session(client: &mut Client, live: &mut Live) -> Result<(), ClientError> {
         while let Some(ev) = client.receive()? {
             let Event::Input(input) = ev else { continue };
             live.touch();
-            if input.fn_pressed != live.scene.fn_pressed {
-                live.scene.fn_pressed = input.fn_pressed;
+            if input.fn_pressed != fn_raw {
+                fn_raw = input.fn_pressed;
+                if fn_raw {
+                    // double-tap Fn (two presses within 400 ms) toggles the hidden controls layer
+                    let now = Instant::now();
+                    if live.scene.cfg.controls.enabled && last_fn_tap.is_some_and(|t| now.duration_since(t) < Duration::from_millis(400)) {
+                        live.scene.controls = !live.scene.controls;
+                        controls_since = now;
+                        last_fn_tap = None;
+                    } else { last_fn_tap = Some(now); }
+                }
+            }
+            let want_fn = fn_raw && !live.scene.controls;
+            if want_fn != live.scene.fn_pressed || live.scene.controls != shown_controls {
+                shown_controls = live.scene.controls;
+                live.scene.fn_pressed = want_fn;
                 // refresh hit regions for the new layer before handling touches in this frame
                 hits = live.scene.render(&mut pm, &live.marks, &mut live.text).hits;
                 dirty = true;
@@ -372,13 +398,17 @@ fn session(client: &mut Client, live: &mut Live) -> Result<(), ClientError> {
                 dirty = true;
                 match hit {
                     Hit::Esc => client.tap_keys(&[Key::Escape])?,
-                    Hit::FKey(i) => client.tap_keys(&[FKEY_CODES[i]])?,
+                    Hit::FKey(i) => { last_fn_tap = None; client.tap_keys(&[FKEY_CODES[i]])? }
+                    Hit::CloseControls => { live.scene.controls = false; }
+                    Hit::Ctl(i) => {
+                        controls_since = Instant::now();
+                        if let Some((_, cmd)) = live.scene.cfg.controls.buttons().get(i) { run_cmd(cmd); }
+                    }
                     Hit::Workspace(n) => hypr::switch_workspace(n),
                     Hit::CancelTouchId => client.cancel_touch_id()?,
                     Hit::WakeAmbient => { live.wake_until = Some(Instant::now() + Duration::from_secs(15)); live.scene.ambient = false; }
                     Hit::Bot(i) => {
-                        let name = live.scene.bots.get(i).map(|b| b.0.name.clone()).unwrap_or_default();
-                        hypr::open_bot(name, false);
+                        if let Some(b) = live.scene.bots.get(i) { hypr::open_bot(b.0.id.clone()); }
                     }
                 }
             }
@@ -386,6 +416,34 @@ fn session(client: &mut Client, live: &mut Live) -> Result<(), ClientError> {
             down = now_down;
         }
     }
+}
+
+/// Run a control command in the background; output is discarded, the child is reaped by a thread.
+fn run_cmd(cmd: &str) {
+    let cmd = cmd.to_string();
+    std::thread::spawn(move || {
+        match std::process::Command::new("sh").arg("-c").arg(&cmd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).output() {
+            Ok(o) if !o.status.success() => eprintln!("t1-dash: control failed ({}): {cmd}: {}", o.status, String::from_utf8_lossy(&o.stderr).trim()),
+            Err(e) => eprintln!("t1-dash: control failed: {cmd}: {e}"),
+            _ => {}
+        }
+    });
+}
+
+/// `t1-dash control <button>` runs a controls-layer button exactly as a tap would (for testing / key binds).
+fn control_cli(name: &str) -> i32 {
+    let cfg_path = std::env::var_os("T1_DASH_CONFIG").map(PathBuf::from).unwrap_or_else(|| config_home().join("touchbar/config.toml"));
+    let cfg = std::fs::read_to_string(&cfg_path).ok().and_then(|t| config::Config::parse(&t).ok()).unwrap_or_default();
+    let want = name.to_ascii_lowercase().replace(['_', '-', ' '], "");
+    let c = &cfg.controls;
+    let cmd = match want.as_str() {
+        "brightnessdown" => &c.brightness_down, "brightnessup" => &c.brightness_up,
+        "kbddown" => &c.kbd_down, "kbdup" => &c.kbd_up, "mute" => &c.mute,
+        "volumedown" => &c.volume_down, "volumeup" => &c.volume_up,
+        _ => { eprintln!("usage: t1-dash control brightness_down|brightness_up|kbd_down|kbd_up|mute|volume_down|volume_up"); return 2; }
+    };
+    println!("{cmd}");
+    std::process::Command::new("sh").arg("-c").arg(cmd).status().map(|s| s.code().unwrap_or(1)).unwrap_or(1)
 }
 
 fn hash(b: &[u8]) -> u64 {
@@ -419,8 +477,50 @@ fn main() {
             let h = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(60);
             dump(&out, w, h)
         }
+        Some("control") => std::process::exit(control_cli(args.get(2).map(String::as_str).unwrap_or(""))),
+        Some("bots") => std::process::exit(bots_cli(&args[2..])),
         Some("--version") => println!("t1-dash {}", env!("CARGO_PKG_VERSION")),
-        Some(_) => { eprintln!("usage: t1-dash [run | preview DIR | dump OUT.png [W H] | --version]"); std::process::exit(2) }
+        Some(_) => { eprintln!("usage: t1-dash [run | bots [show|hide NAME] | preview DIR | dump OUT.png [W H] | --version]"); std::process::exit(2) }
+    }
+}
+
+/// `t1-dash bots` lists bots with on/off; `bots show|hide NAME` edits [bots] in config.toml
+/// (the running bar picks the change up within a second).
+fn bots_cli(args: &[String]) -> i32 {
+    let cfg_path = std::env::var_os("T1_DASH_CONFIG").map(PathBuf::from).unwrap_or_else(|| config_home().join("touchbar/config.toml"));
+    let text = std::fs::read_to_string(&cfg_path).unwrap_or_default();
+    let cfg = config::Config::parse(&text).unwrap_or_default();
+    let dir = config_home().join("Grok Bot/sand-client-persistence");
+    let all = cfg.bots.roster.clone().or_else(|| bots::find_roster(&dir))
+        .and_then(|p| std::fs::read_to_string(p).ok()).map(|t| bots::parse_roster(&t)).unwrap_or_default();
+    let shown = bots::select(all.clone(), &cfg.bots.show, &cfg.bots.hide, &cfg.bots.order);
+    match args.first().map(String::as_str) {
+        None | Some("list") => {
+            if all.is_empty() { eprintln!("no Grok Bot roster found"); return 1; }
+            let mut list: Vec<&bots::Bot> = shown.iter().collect();
+            list.extend(all.iter().filter(|b| !shown.iter().any(|s| s.id == b.id)));
+            for b in list {
+                let on = shown.iter().any(|s| s.id == b.id);
+                println!("{}  {:<24} {}", if on { "on " } else { "off" }, b.name, b.id);
+            }
+            0
+        }
+        Some(verb @ ("show" | "hide")) if args.len() >= 2 => {
+            let want = args[1..].join(" ");
+            let Some(bot) = all.iter().find(|b| bots::matches(b, &want)) else { eprintln!("no bot named {want:?} (see: t1-dash bots)"); return 1; };
+            let drop = |l: &[String]| l.iter().filter(|x| !bots::matches(bot, x)).cloned().collect::<Vec<_>>();
+            let mut show = cfg.bots.show.clone();
+            let mut hide = drop(&cfg.bots.hide);
+            if verb == "hide" { hide.push(bot.name.clone()); show = drop(&show); }
+            else if !show.is_empty() && !show.iter().any(|x| bots::matches(bot, x)) { show.push(bot.name.clone()); }
+            let out = config::set_bots_lists(&text, &show, &hide);
+            if let Some(d) = cfg_path.parent() { let _ = std::fs::create_dir_all(d); }
+            let tmp = cfg_path.with_extension("toml.tmp");
+            if std::fs::write(&tmp, out).and_then(|_| std::fs::rename(&tmp, &cfg_path)).is_err() { eprintln!("could not write {}", cfg_path.display()); return 1; }
+            println!("{} {}", if verb == "hide" { "hid" } else { "showing" }, bot.name);
+            0
+        }
+        _ => { eprintln!("usage: t1-dash bots [list | show NAME | hide NAME]"); 2 }
     }
 }
 

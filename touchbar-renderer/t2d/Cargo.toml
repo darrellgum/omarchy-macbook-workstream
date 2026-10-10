@@ -1,0 +1,17 @@
+[package]
+name = "t1-dash-t2d"
+version = "0.1.0"
+edition = "2021"
+license = "CC0-1.0"
+description = "Serves the T1Bridge renderer protocol on T2 Macs: Touch Bar DRM output, evdev touch, uinput keys"
+
+[dependencies]
+drm = "0.14"
+evdev = "0.12"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+
+[workspace]

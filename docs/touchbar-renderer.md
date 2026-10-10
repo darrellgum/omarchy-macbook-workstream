@@ -81,23 +81,47 @@ repository; use whichever you prefer.
 - **OLED care:** content shifts a few pixels every few minutes; after 10
   minutes without touch, keyboard, trackpad or Hyprland activity the bar dims
   to 80% and later shows a slow ambient wave. Activity restores it.
+- **Controls layer:** double-tap Fn to open a hidden row with display
+  brightness, keyboard backlight and volume buttons (holding Fn still shows
+  F1 to F12). Tap esc, or wait 5 seconds, to close it. Each button runs a
+  shell command from `[controls]` in the config; the defaults use
+  swayosd-client when it is installed, otherwise brightnessctl and wpctl.
 - **Config:** `~/.config/touchbar/config.toml` sets widget order and toggles.
   `config/config.toml` is the documented example. `SIGUSR1` reloads it.
 
+## T2 MacBooks
+
+T2 models have no T1Bridge, so t1-dash ships a small root bridge,
+`t1-dash-t2d`, that speaks the same renderer protocol. See
+[T2 setup](touchbar-t2.md).
+
 ## Optional Grok Bot integration
 
-When built with the `grok-bot` Cargo feature, the bar can also show the Grok
-Bot desktop app's agents as their avatar marks, with the app's idle and working
-animations, its unread count and "awaiting you" badge, and tap to focus the
-app. It reads the app's local roster file read-only and makes no network calls.
-`bots.enabled` in the config forces it on or off; unset, it turns on only when
-`~/.config/Grok Bot/sand-client-persistence` exists. When it is off or not
-built, the bots widget takes no space and the activity widget is used instead.
+When the Grok Bot desktop app is installed, the bar also shows its agents as
+their avatar marks, with the app's idle and working animations, its unread
+count and "awaiting you" badge. Tapping a mark opens that bot's conversation
+through the app's `grokbot://app/v1/agent?id=` link on app builds that support
+it, then focuses the window; older builds are just focused. It never types into
+the app. It reads the app's local roster file read-only and makes no network
+calls. `bots.enabled` in the config forces it on or off; unset, it turns on when
+the app's data directory exists.
 
-The avatar artwork belongs to the app and is not included. See
-[touchbar-renderer/tools/README.md](../touchbar-renderer/tools/README.md) to
-generate `assets/marks.json` from your own installed copy. `build.sh` enables
-the feature only when that file exists.
+Pick which bots appear with `show`, `hide` and `order` under `[bots]` (names,
+case-insensitive, or ids), or from a terminal:
+
+    t1-dash bots              # list bots with on/off
+    t1-dash bots hide Scout
+    t1-dash bots show Scout
+
+The running bar picks up config changes within a second.
+
+The avatar artwork belongs to the app and is not included. On start, t1-dash
+extracts the mark geometry from the locally installed app into
+`~/.cache/t1-dash/marks.json` and refreshes it after app updates (see
+[touchbar-renderer/tools/README.md](../touchbar-renderer/tools/README.md)).
+If the app is absent or extraction fails, the bots widget takes no space and
+the activity widget is used instead. `--no-default-features` builds leave the
+integration out entirely.
 
 ## Build, select, and restore
 
@@ -128,9 +152,9 @@ overwrite a selection changed after it was installed.
 ## Tested scope and limits
 
 - One MacBookPro14,3, T1Bridge 0.1.12, panel 2170x60, Omarchy on Hyprland.
-- 31 unit tests in generic mode, 35 with `grok-bot`, plus the fake-service
+- Unit tests (with synthetic mark geometry) plus the fake-service
   smoke test (Escape and Fn+F5 emit the right keys). On the laptop the
-  `grok-bot` build has run as the active renderer and reconnects after
+  default build has run as the active renderer and reconnects after
   service restarts.
 - The renderer cannot change the Touch Bar's own panel brightness; T1Bridge's
   brightness actions only reach the display and keyboard backlight.

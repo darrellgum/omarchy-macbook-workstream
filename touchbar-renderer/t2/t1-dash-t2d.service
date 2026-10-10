@@ -1,0 +1,12 @@
+[Unit]
+Description=t1-dash T2 Touch Bar bridge (display, touch, keys)
+After=systemd-udev-settle.service
+Conflicts=tiny-dfr.service
+
+[Service]
+ExecStart=/usr/local/libexec/t1-dash-t2d --socket /run/t1-dash-t2/touchbar.sock --allow-uid @UID@
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

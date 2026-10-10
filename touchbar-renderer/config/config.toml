@@ -25,8 +25,9 @@ max_count = 10
 # enabled = true               # unset = auto-detect the Grok Bot app (~/.config/Grok Bot); false hides the bots widget
 # status_dir = "/absolute/path"   # default: ~/.local/state/touchbar/bots;  # files named <bot-id> (or name slug) containing working|idle
 # roster = ".../Grok Bot/sand-client-persistence/<roster>.blob" # default: auto-detected
-include = []                  # names or ids, in display order; empty = all bots in roster order
-exclude = []
+show = []                     # names (case-insensitive) or ids; empty = all bots. Or use: t1-dash bots show|hide <name>
+hide = []
+order = []                    # names or ids drawn first, in this order
 stale_after_secs = 900        # a 'working' file not touched for this long counts as idle (0 = never)
 mark_size = 52
 app_state = true              # unread/awaiting badges + working heuristic from the app's local roster/transcripts
@@ -53,3 +54,17 @@ shift_secs = 120              # move all content one step along a small square e
 shift_px = 2
 dim_after_secs = 600          # dim static elements after this much idle
 dim_level = 0.8
+
+[controls]
+# Hidden layer: double-tap Fn to open, tap esc (or wait timeout_secs) to close. Holding Fn still shows F1-F12.
+enabled = true
+timeout_secs = 5
+# Each button runs a shell command. Set one to "" to hide it. Defaults use swayosd-client when present,
+# else brightnessctl / wpctl:
+# brightness_down = "brightnessctl -q -c backlight set 5%-"
+# brightness_up   = "brightnessctl -q -c backlight set +5%"
+# kbd_down        = "brightnessctl -q -d '*kbd_backlight*' set 10%-"
+# kbd_up          = "brightnessctl -q -d '*kbd_backlight*' set +10%"
+# mute            = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+# volume_down     = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
+# volume_up       = "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+"

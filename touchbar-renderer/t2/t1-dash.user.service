@@ -1,0 +1,13 @@
+[Unit]
+Description=t1-dash Touch Bar renderer (T2)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Environment=T1_DASH_SOCKET=/run/t1-dash-t2/touchbar.sock
+ExecStart=%h/.config/t1-dash/renderer
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

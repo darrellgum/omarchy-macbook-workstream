@@ -1,0 +1,5 @@
+# t1-dash on T2 MacBooks: switch the Touch Bar to its display configuration (appletbdrm + digitizer)
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="8302", ATTR{bConfigurationValue}=="1", ATTR{bConfigurationValue}="0", ATTR{bConfigurationValue}="2"
+# keep the compositor off the Touch Bar display and digitizer (same seat trick as tiny-dfr)
+SUBSYSTEM=="drm", KERNEL=="card*", DRIVERS=="appletbdrm", TAG-="master-of-seat", ENV{ID_SEAT}="seat-touchbar"
+SUBSYSTEM=="input", ATTR{name}=="Apple Inc. Touch Bar Display Touchpad", ENV{ID_SEAT}="seat-touchbar"
